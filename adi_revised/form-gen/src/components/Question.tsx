@@ -1,4 +1,4 @@
-import { useContext } from "react";
+import { useContext, useEffect, useState } from "react";
 import { QuestionnaireContext } from "../context/QuestionnaireContext";
 import { Questionnaire } from "../types/Questionnaire";
 
@@ -12,6 +12,11 @@ const Question = ({
   disabled?: boolean;
 }) => {
   const { updateQuestionnaire } = useContext(QuestionnaireContext);
+  const [evidence, setEvidence] = useState(question.evidence || "");
+
+  useEffect(() => {
+    setEvidence(question.evidence || "");
+  }, [question.evidence]);
 
   const update = (
     answer: boolean,
@@ -36,15 +41,12 @@ const Question = ({
   };
 
   return (
-    <div className="flex flex-row">
-      {/* <h2 className="mb-3 mr-2 text-xl font-semibold opacity-50">
-  				{key})
-  			</h2> */}
-      <div>
-        <div className="flex flex-row justify-between items-center mb-3">
+    <div className="flex flex-row w-full">
+      <div className="w-full">
+        <div className="mb-3">
           <h2 className="text-xl font-semibold">{question.question}</h2>
           {question.answer && (
-            <h3 className="text-base font-semibold">
+            <h3 className="text-base font-semibold text-red-500">
               Score: {calculateScore()}
             </h3>
           )}
@@ -87,16 +89,23 @@ const Question = ({
           </div>
 
           {question.answer === true && (
-            <div className="flex items-center">
+            <div className="flex items-center gap-1 ml-4">
+              <label
+                htmlFor={"evidence--" + questionId}
+                className="mb-0.5 text-base"
+              >
+                Evidence:{" "}
+              </label>
               <input
+                disabled={disabled}
                 type="input"
                 id={"evidence--" + questionId}
                 name={"evidence--" + questionId}
                 className="mr-2 px-2 py-1 mb-0.5"
                 placeholder="Enter Evidence"
-                onChange={(event) =>
-                  update(false, event.target.value, questionId)
-                }
+                value={evidence}
+                onChange={(event) => setEvidence(event.target.value)}
+                onBlur={() => update(true, evidence, questionId)}
               />
             </div>
           )}
