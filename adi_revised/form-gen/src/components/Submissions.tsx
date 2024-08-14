@@ -112,15 +112,20 @@ interface PopupProps {
 
 const Popup: React.FC<PopupProps> = ({ onClose, questionnaire }) => {
   return (
-    <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50">
-      <div className="bg-white p-8 rounded-lg shadow-lg w-1/2 relative">
-        <button
-          onClick={onClose}
-          className="absolute top-2 right-2 text-gray-600 hover:text-gray-800 w-4 h-4"
-        >
-          &times;
-        </button>
-        <h2 className="text-2xl font-bold mb-4">Submission Details</h2>
+    <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50 p-8">
+      <div className="bg-white p-8 rounded-lg shadow-lg w-1/2 relative max-h-full overflow-y-auto">
+        <div className="flex flex-row justify-between items-center mb-4">
+          <h2 className="text-2xl font-bold ">Submission Details</h2>
+
+          <div className="border border-1 rounded-full w-8 h-8 flex flex-col justify-between items-center">
+            <button
+              onClick={onClose}
+              className="text-gray-600 hover:text-gray-800 w-8 h-8 scale-125"
+            >
+              &times;
+            </button>
+          </div>
+        </div>
         <Form questions={questionnaire} disabled={true} />
       </div>
     </div>
