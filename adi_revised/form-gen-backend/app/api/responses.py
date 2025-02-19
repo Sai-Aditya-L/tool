@@ -1,10 +1,11 @@
 import csv
 import io
+from datetime import datetime
 
 from flask import jsonify, request, make_response
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app import db
-from app.models import User, Question, SubQuestion, Response
+from app.models import User, Question, SubQuestion, Response, Form
 from app.api import bp
 
 
@@ -94,67 +95,72 @@ def update_responses(form_id):
     return jsonify({'message': 'Responses updated successfully'}), 200
 
 
-@bp.route('/responses/export/<int:form_id>', methods=['GET'])
-def export_responses(form_id):
+@bp.route('/responses/export', methods=['GET'])
+def export_responses():
     users = User.query.all()
     data = []
 
     for user in users:
-        responses = Response.query.filter_by(user_id=user.id)
-        question_responses = {str(response.question_id): response for response in responses if
-                              response.subquestion_id is None}
-        subquestion_responses = {str(response.subquestion_id): response for response in responses if
-                                 response.subquestion_id is not None}
+        form = Form.query.all()
+        for form in form:
+            responses = Response.query.filter_by(user_id=user.id)
+            question_responses = {str(response.question_id): response for response in responses if
+                                  response.subquestion_id is None}
+            subquestion_responses = {str(response.subquestion_id): response for response in responses if
+                                     response.subquestion_id is not None}
 
-        questions = Question.query.filter_by(form_id=form_id).all()
-        subquestions = SubQuestion.query.filter(SubQuestion.parent_question_id.in_([q.id for q in questions])).all()
-        result = {}
+            questions = Question.query.filter_by(form_id=form.id).all()
+            subquestions = SubQuestion.query.filter(SubQuestion.parent_question_id.in_([q.id for q in questions])).all()
+            result = {}
 
-        for question in questions:
-            question_id = str(question.id)
-            if question_id in question_responses:
-                response_obj = question_responses[question_id]
-                result[question_id] = {
-                    'answer': response_obj.answer,
-                    'evidence': response_obj.evidence,
-                    'question': question.question,
-                    'subquestions': {}
-                }
-            else:
-                result[question_id] = {
-                    'answer': None,
-                    'evidence': None,
-                    'question': question.question,
-                    'subquestions': {}
-                }
 
-        for subquestion in subquestions:
-            subquestion_id = str(subquestion.id)
-            if subquestion_id in subquestion_responses:
-                response_obj = subquestion_responses[subquestion_id]
-                result[f"{subquestion.parent_question_id}"]["subquestions"][f"{subquestion_id}"] = {
-                    'answer': response_obj.answer,
-                    'evidence': response_obj.evidence,
-                    'question': subquestion.question,
-                }
-            else:
-                result[f"{subquestion.parent_question_id}"]["subquestions"][f"{subquestion_id}"] = {
-                    'answer': None,
-                    'evidence': None,
-                    'question': subquestion.question,
-                }
+            for question in questions:
+                question_id = str(question.id)
+                if question_id in question_responses:
+                    response_obj = question_responses[question_id]
+                    result[question_id] = {
+                        'answer': response_obj.answer,
+                        'evidence': response_obj.evidence,
+                        'question': question.question,
+                        'form': form.name,
+                        'subquestions': {}
+                    }
+                else:
+                    result[question_id] = {
+                        'answer': None,
+                        'evidence': None,
+                        'question': question.question,
+                        'subquestions': {}
+                    }
 
-        data.append([*build_question_text(user.name, result)])
+
+            for subquestion in subquestions:
+                subquestion_id = str(subquestion.id)
+                if subquestion_id in subquestion_responses:
+                    response_obj = subquestion_responses[subquestion_id]
+                    result[f"{subquestion.parent_question_id}"]["subquestions"][f"{subquestion_id}"] = {
+                        'answer': response_obj.answer,
+                        'evidence': response_obj.evidence,
+                        'question': subquestion.question,
+                    }
+                else:
+                    result[f"{subquestion.parent_question_id}"]["subquestions"][f"{subquestion_id}"] = {
+                        'answer': None,
+                        'evidence': None,
+                        'question': subquestion.question,
+                    }
+
+            data.append([*build_question_text(form.name, user.name, result)])
 
     # Create CSV
     output = io.StringIO()
     writer = csv.writer(output)
-    writer.writerow(['Username', 'Question and Answer', 'Total Score'])
+    writer.writerow(['Form', 'Username', 'Question and Answer', 'Total Score'])
     writer.writerows(data)
     output.seek(0)
 
     response = make_response(output.getvalue())
-    response.headers["Content-Disposition"] = "attachment; filename=data.csv"
+    response.headers["Content-Disposition"] = f"attachment; filename=export_data_{datetime.now().strftime('%Y%m%d')}.csv"
     response.headers["Content-type"] = "text/csv"
 
     return response
@@ -168,7 +174,7 @@ def calculate_score(question):
             question["subquestions"].keys())) * 3)
 
 
-def build_question_text(username, result):
+def build_question_text(form_name, username, result):
     response_text = ""
     score = 0
     for question in result.values():
@@ -207,4 +213,4 @@ def build_question_text(username, result):
                 else:
                     response_text += f": No answer"
 
-    return username, response_text, score
+    return form_name, username, response_text, score
