@@ -16,7 +16,7 @@ def register():
     user.set_password(data['password'])
     db.session.add(user)
     db.session.commit()
-    token = create_access_token(identity=user.id)
+    token = create_access_token(identity=str(user.id))
     return jsonify({'message': 'User registered successfully', 'token': token}), 201
 
 
@@ -28,5 +28,5 @@ def login():
     user = User.query.filter_by(email=data['email']).first()
     if user is None or not user.check_password(data['password']):
         return jsonify({'error': 'Invalid email or password'}), 401
-    token = create_access_token(identity=user.id)
+    token = create_access_token(identity=str(user.id))
     return jsonify({'token': token}), 200

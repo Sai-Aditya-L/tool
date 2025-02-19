@@ -11,7 +11,7 @@ class User(db.Model):
     password_hash = db.Column(db.String(128))
 
     def set_password(self, password):
-        self.password_hash = generate_password_hash(password)
+        self.password_hash = generate_password_hash(password, method="pbkdf2:sha256")
 
     def check_password(self, password):
         return check_password_hash(self.password_hash, password)
@@ -20,16 +20,26 @@ class User(db.Model):
         return f'<User {self.email}>'
 
 
+class Form(db.Model):
+    id = db.Column(db.Integer, primary_key=True, autoincrement=True)
+    name = db.Column(db.String(128), unique=True, nullable=False)
+    questions = db.relationship('Question', backref='form', lazy='dynamic', cascade="all, delete-orphan")
+
+    def __repr__(self):
+        return f'<Form {self.name}>'
+
 class Question(db.Model):
     id = db.Column(db.Integer, primary_key=True, autoincrement=True)
     question = db.Column(db.String(256), nullable=False)
+    form_id = db.Column(db.Integer, db.ForeignKey('form.id', name='fk_question_form'))
     subquestions = db.relationship('SubQuestion', backref='parent_question', lazy='dynamic',
                                    cascade="all, delete-orphan")
 
     def to_dict(self):
         return {
             'id': self.id,
-            'question': self.question
+            'question': self.question,
+            'form_id': self.form_id
         }
 
     def __repr__(self):

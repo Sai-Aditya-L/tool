@@ -7,20 +7,21 @@ from app.api import bp
 
 # app/api/submissions.py
 
-@bp.route('/submissions', methods=['GET'])
+@bp.route('/submissions/<int:form_id>', methods=['GET'])
 @jwt_required()
-def get_submissions():
+def get_submissions(form_id):
     # This endpoint returns a list of users who have submitted responses.
-    responses = Response.query.all()
+    responses = Response.query.join(Question, Response.question_id == Question.id).filter(
+        Question.form_id == form_id).all()
     user_ids = set(response.user_id for response in responses)
     users = User.query.filter(User.id.in_(user_ids)).all()
     submissions = [{'id': user.id, 'email': user.email, 'name': user.name} for user in users]
     return jsonify(submissions)
 
 
-@bp.route('/submissions/<int:user_id>', methods=['GET'])
+@bp.route('/submissions/<int:form_id>/<int:user_id>', methods=['GET'])
 @jwt_required()
-def get_user_responses(user_id):
+def get_user_responses(form_id, user_id):
     # This endpoint returns responses for a specific user.
     responses = Response.query.filter_by(user_id=user_id)
     question_responses = {str(response.question_id): response for response in responses if
@@ -28,8 +29,8 @@ def get_user_responses(user_id):
     subquestion_responses = {str(response.subquestion_id): response for response in responses if
                              response.subquestion_id is not None}
 
-    questions = Question.query.all()
-    subquestions = SubQuestion.query.all()
+    questions = Question.query.filter_by(form_id=form_id).all()
+    subquestions = SubQuestion.query.filter(SubQuestion.parent_question_id.in_([q.id for q in questions])).all()
     result = {}
 
     for question in questions:
@@ -52,10 +53,12 @@ def get_user_responses(user_id):
                 'subquestions': {}
             }
 
+
     for subquestion in subquestions:
         subquestion_id = str(subquestion.id)
         if subquestion_id in subquestion_responses:
             response_obj = subquestion_responses[subquestion_id]
+            print(result[f"{subquestion.parent_question_id}"]["subquestions"])
             result[f"{subquestion.parent_question_id}"]["subquestions"][f"{subquestion_id}"] = {
                 'answer': response_obj.answer,
                 'evidence': response_obj.evidence,

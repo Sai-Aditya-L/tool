@@ -12,6 +12,12 @@ const Sidebar: React.FC = () => {
 				<h1 className="text-2xl font-semibold">My App</h1>
 			</div>
 			<nav className="flex flex-col flex-grow p-4">
+				<NavLink to="/forms" className={({ isActive }) =>
+					`flex items-center py-2 px-4 mb-2 rounded transition-colors ${isActive ? 'bg-gray-800' : 'hover:bg-gray-800'}`
+				}>
+					<FaWpforms className="mr-3" />
+					Manage Forms
+				</NavLink>
 				<NavLink
 					to="/form"
 					className={({ isActive }) =>

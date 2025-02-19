@@ -8,9 +8,9 @@ from app.models import User, Question, SubQuestion, Response
 from app.api import bp
 
 
-@bp.route('/responses', methods=['GET'])
+@bp.route('/responses/<int:form_id>', methods=['GET'])
 @jwt_required()
-def get_responses():
+def get_responses(form_id):
     user_id = get_jwt_identity()
     responses = Response.query.filter_by(user_id=user_id)
     question_responses = {str(response.question_id): response for response in responses if
@@ -18,8 +18,8 @@ def get_responses():
     subquestion_responses = {str(response.subquestion_id): response for response in responses if
                              response.subquestion_id is not None}
 
-    questions = Question.query.all()
-    subquestions = SubQuestion.query.all()
+    questions = Question.query.filter_by(form_id=form_id).all()
+    subquestions = SubQuestion.query.filter(SubQuestion.parent_question_id.in_([q.id for q in questions])).all()
     result = {}
 
     for question in questions:
@@ -63,9 +63,9 @@ def get_responses():
     return jsonify(result)
 
 
-@bp.route('/responses', methods=['PUT'])
+@bp.route('/responses/<int:form_id>', methods=['PUT'])
 @jwt_required()
-def update_responses():
+def update_responses(form_id):
     user_id = get_jwt_identity()
     data = request.get_json() or {}
     for question_id, response_obj in data.items():
@@ -89,12 +89,13 @@ def update_responses():
                                         answer=subquestion_obj["answer"], evidence=subquestion_obj["evidence"])
                 db.session.add(new_response)
 
+    db.session.flush()
     db.session.commit()
     return jsonify({'message': 'Responses updated successfully'}), 200
 
 
-@bp.route('/responses/export', methods=['GET'])
-def export_responses():
+@bp.route('/responses/export/<int:form_id>', methods=['GET'])
+def export_responses(form_id):
     users = User.query.all()
     data = []
 
@@ -105,8 +106,8 @@ def export_responses():
         subquestion_responses = {str(response.subquestion_id): response for response in responses if
                                  response.subquestion_id is not None}
 
-        questions = Question.query.all()
-        subquestions = SubQuestion.query.all()
+        questions = Question.query.filter_by(form_id=form_id).all()
+        subquestions = SubQuestion.query.filter(SubQuestion.parent_question_id.in_([q.id for q in questions])).all()
         result = {}
 
         for question in questions:

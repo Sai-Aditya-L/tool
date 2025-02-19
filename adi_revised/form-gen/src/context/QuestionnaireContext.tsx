@@ -12,14 +12,14 @@ interface QuestionnaireContextType {
     questionId: string,
     subQuestionId?: string,
   ) => void;
-  fetchQuestionnaire: () => void;
+  fetchQuestionnaire: (formId: number) => void;
 }
 
 // Create the context with a default value
 const QuestionnaireContext = createContext<QuestionnaireContextType>({
   questionnaire: {},
   updateQuestionnaire: () => {},
-  fetchQuestionnaire: () => {},
+  fetchQuestionnaire: (formId: number) => {},
 });
 
 const QuestionnaireProvider = ({ children }: { children: React.ReactNode }) => {
@@ -28,14 +28,10 @@ const QuestionnaireProvider = ({ children }: { children: React.ReactNode }) => {
   }>({});
   const { getToken } = useContext(AuthContext);
 
-  useEffect(() => {
-    fetchQuestionnaire();
-  }, [getToken]);
-
-  const fetchQuestionnaire = async () => {
+  const fetchQuestionnaire = async (formId: number) => {
     try {
       const token = getToken();
-      const response = await fetch("http://127.0.0.1:5000/api/responses", {
+      const response = await fetch(`http://127.0.0.1:5000/api/responses/${formId}`, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",

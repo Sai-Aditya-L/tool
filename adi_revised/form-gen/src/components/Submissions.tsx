@@ -8,20 +8,29 @@ interface Submission {
   email: string;
 }
 
+interface FormType {
+  id: number;
+  name: string;
+}
+
 const Submissions: React.FC = () => {
   const [submissions, setSubmissions] = useState<Submission[]>([]);
+  const [forms, setForms] = useState<FormType[]>([]);
   const [selectedSubmission, setSelectedSubmission] =
     useState<Submission | null>(null);
   const [questionnaire, setQuestionnaire] = useState<{
     [key: number]: any;
   } | null>(null);
 
+  const [isOpen, setIsOpen] = useState(false);
+  const [selectedForm, setSelectedForm] = useState<FormType | null>(null);
+
   const { getToken } = useContext(AuthContext);
 
-  const fetchSubmissions = async () => {
+  const fetchSubmissions = async (form: FormType) => {
     try {
       const token = getToken();
-      const response = await fetch("http://127.0.0.1:5000/api/submissions", {
+      const response = await fetch(`http://127.0.0.1:5000/api/submissions/${form.id}`, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
@@ -30,6 +39,8 @@ const Submissions: React.FC = () => {
       });
       if (response.ok) {
         const data = await response.json();
+        setSelectedForm(form);
+        setIsOpen(true);
         setSubmissions(data);
       } else {
         console.error("Failed to fetch submissions");
@@ -39,12 +50,12 @@ const Submissions: React.FC = () => {
     }
   };
 
-  const fetchQuestionnaireForSubmission = async (id: number) => {
+  const fetchQuestionnaireForSubmission = async (form_id: number, id: number) => {
     try {
       const token = getToken();
 
       const response = await fetch(
-        `http://127.0.0.1:5000/api/submissions/${id}`,
+        `http://127.0.0.1:5000/api/submissions/${form_id}/${id}`,
         {
           method: "GET",
           headers: {
@@ -55,6 +66,7 @@ const Submissions: React.FC = () => {
       );
       if (response.ok) {
         const data = await response.json();
+        console.log(data)
         setQuestionnaire(data);
       } else {
         console.error("Failed to fetch questionnaire for submission");
@@ -64,13 +76,27 @@ const Submissions: React.FC = () => {
     }
   };
 
+  const fetchForms = async () => {
+    const token = getToken();
+    const response = await fetch("http://127.0.0.1:5000/api/forms", {
+      headers: { Authorization: `Bearer ${token}` },
+    });
+    if (response.ok) {
+      setForms(await response.json());
+    }
+  };
+
   useEffect(() => {
-    fetchSubmissions();
+    fetchForms();
   }, []);
+
+  const handleOpenForm = (form: FormType) => {
+    fetchSubmissions(form);
+  };
 
   const handleSubmissionClick = (submission: Submission) => {
     setSelectedSubmission(submission);
-    fetchQuestionnaireForSubmission(submission.id);
+    fetchQuestionnaireForSubmission(selectedForm!.id, submission.id);
   };
 
   const handleClosePopup = () => {
@@ -78,25 +104,54 @@ const Submissions: React.FC = () => {
     setQuestionnaire(null);
   };
 
+  const closePopup = () => {
+    setIsOpen(false);
+    setSelectedForm(null);
+  };
+
   return (
     <div className="p-8">
       <h2 className="mb-4 text-2xl font-bold">Submissions</h2>
-      <div className="space-y-4">
-        {submissions.map((submission) => (
-          <div
-            key={submission.id}
-            className="flex justify-between p-4 border border-gray-300 rounded"
-          >
-            <span>{submission.name}</span>
-            <button
-              onClick={() => handleSubmissionClick(submission)}
-              className="px-4 py-2 font-bold text-white bg-blue-500 rounded hover:bg-blue-700"
+      <ul className="mt-4">
+        {forms.map((form) => (
+            <li
+                key={form.id}
+                className="flex justify-between border p-2 mb-2 cursor-pointer hover:bg-gray-100"
+                onClick={() => handleOpenForm(form)}
             >
-              View Details
-            </button>
-          </div>
+              <span>{form.name}</span>
+            </li>
         ))}
-      </div>
+      </ul>
+      {isOpen && selectedForm&& selectedForm.id && (
+          <div className="fixed inset-0 flex items-center justify-center bg-black bg-opacity-50">
+            <div className="bg-white p-6 rounded-lg shadow-lg w-1/2 max-h-full overflow-y-auto">
+              <div className={"mb-4 flex justify-between items-center"}>
+                <h2 className=" text-2xl font-bold">{selectedForm.name}'s Submissions</h2>
+                <button onClick={closePopup} className="text-gray-600 hover:text-gray-800 w-8 h-8 scale-125">
+                  &times;
+                </button>
+              </div>
+              <div className="space-y-4">
+                {submissions.map((submission) => (
+                  <div
+                    key={submission.id}
+                    className="flex justify-between p-4 border border-gray-300 rounded"
+                  >
+                    <span>{submission.name}</span>
+                    <button
+                      onClick={() => handleSubmissionClick(submission)}
+                      className="px-4 py-2 font-bold text-white bg-blue-500 rounded hover:bg-blue-700"
+                    >
+                      View Details
+                    </button>
+                  </div>
+                ))}
+                {submissions.length === 0 && (<div>No submissions found</div>)}
+              </div>
+            </div>
+          </div>
+      )}
 
       {selectedSubmission && questionnaire && (
         <Popup onClose={handleClosePopup} questionnaire={questionnaire} />
