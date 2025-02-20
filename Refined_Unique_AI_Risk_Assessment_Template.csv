@@ -1,0 +1,16 @@
+,Risk ID,Risk Category,Risk Description,Likelihood,Impact,Mitigation Strategy,Responsible Party,Monitoring & Review Frequency,AI RMF Function
+0,AI-RISK-1,Bias & Fairness,Unintentional bias in training data leading to discrimination,High,Severe,Regular bias audits and fairness assessments,AI Ethics Team,Quarterly,Govern
+1,AI-RISK-2,Security & Privacy,Unauthorized access to sensitive AI model data,Medium,Moderate,Implement multi-layered cybersecurity protocols,Security Team,Annually,Manage
+2,AI-RISK-3,Explainability & Transparency,Lack of interpretability in AI-generated outputs,Low,Minor,Develop explainability features for AI outputs,AI Explainability Experts,Biannually,Measure
+3,AI-RISK-4,Ethical & Legal Compliance,Non-compliance with legal and ethical AI standards,High,Severe,Ensure alignment with AI legal compliance standards,Legal & Compliance,Quarterly,Govern
+4,AI-RISK-5,Performance & Reliability,AI system performance degradation over time,Medium,Moderate,Continuous monitoring of AI performance metrics,Performance Monitoring Team,Annually,Measure
+5,AI-RISK-6,Human-AI Interaction,Unclear decision-making boundaries between AI and humans,Low,Minor,Establish clear AI-human decision frameworks,Human-AI Collaboration Team,Biannually,Map
+6,AI-RISK-7,Operational Resilience,AI system failure in critical operations,High,Severe,Develop fail-safe mechanisms for critical AI systems,Operations & Risk Team,Quarterly,Manage
+7,AI-RISK-8,Data Management,Data quality issues affecting AI model accuracy,Medium,Moderate,"Use diverse, high-quality datasets",Data Management,Annually,Manage
+8,AI-RISK-9,Governance & Accountability,Lack of oversight in AI decision-making processes,Low,Minor,Implement governance frameworks for AI decisions,AI Governance Board,Biannually,Govern
+9,AI-RISK-10,Regulatory Compliance,Failure to comply with AI governance regulations,High,Severe,Regular audits for compliance with AI regulations,Regulatory Compliance Team,Quarterly,Govern
+10,AI-RISK-11,Supply Chain & Third-Party Risks,Dependency on external AI tools leading to vulnerabilities,Medium,Moderate,Vet third-party AI tools rigorously,Procurement & Vendor Management,Annually,Manage
+11,AI-RISK-12,Environmental Impact,High carbon footprint from AI model training,Low,Minor,Optimize AI infrastructure for energy efficiency,Sustainability Team,Biannually,Measure
+12,AI-RISK-13,Misinformation & Disinformation,Spread of AI-generated misinformation,High,Severe,Deploy AI fact-checking and verification tools,Media & Communication Experts,Quarterly,Map
+13,AI-RISK-14,Economic Impact,Job displacement due to AI automation,Medium,Moderate,Create workforce reskilling programs,HR & Workforce Planning,Annually,Map
+14,AI-RISK-15,Safety & Well-being,Safety risks associated with AI-driven autonomous systems,Low,Minor,Conduct rigorous AI safety testing before deployment,AI Safety Review Committee,Biannually,Measure
