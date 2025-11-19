@@ -1,10 +1,11 @@
 Option Explicit
 
-'=== SETTINGS YOU CAN CHANGE ======================================
+'==================== SETTINGS ==========================
 Const TEMPLATE_SHEET As String = "Administrative Information"
 Const URL_HEADER     As String = "URLs / IPs"
 Const SUMMARY_SHEET  As String = "URL_List"
-'==================================================================
+Const MAX_URL_ROW    As Long = 2500   ' last row to check under URLs / IPs
+'========================================================
 
 Sub Collect_URLs_From_All_Subfolders()
 
@@ -19,7 +20,7 @@ Sub Collect_URLs_From_All_Subfolders()
     Set fldr = Application.FileDialog(msoFileDialogFolderPicker)
     With fldr
         .Title = "Select TOP-LEVEL folder that contains all subfolders"
-        If .Show <> -1 Then Exit Sub   ' user cancelled
+        If .Show <> -1 Then Exit Sub      ' User cancelled
         rootPath = .SelectedItems(1)
     End With
     
@@ -42,7 +43,7 @@ Sub Collect_URLs_From_All_Subfolders()
     
     wsSummary.Cells.Clear
     
-    ' Headers
+    ' Headers for the output table
     wsSummary.Range("A1").Value = "Source File"
     wsSummary.Range("B1").Value = "Full Path"
     wsSummary.Range("C1").Value = "URL / IP"
@@ -53,7 +54,7 @@ Sub Collect_URLs_From_All_Subfolders()
     nextRow = 2
     
     '----------------------------------------
-    ' Walk all folders & files
+    ' Walk all folders & files recursively
     '----------------------------------------
     ProcessFolder rootPath, wsSummary, nextRow
     
@@ -83,7 +84,7 @@ Private Sub ProcessFolder(ByVal folderPath As String, _
     '------------- Handle all files in this folder -----------------
     For Each fileObj In folder.Files
         
-        ' Skip this workbook and temporary files like ~$
+        ' Skip this workbook and temp files like ~$
         If LCase(fileObj.Name) <> LCase(ThisWorkbook.Name) _
            And Left(fileObj.Name, 2) <> "~$" Then
             
@@ -102,7 +103,7 @@ Private Sub ProcessFolder(ByVal folderPath As String, _
 End Sub
 
 '=================================================================
-' Open a single workbook, read URLs section, write to summary
+' Open a single workbook, read URLs section (to row 2500), write to summary
 '=================================================================
 Private Sub ProcessFile(ByVal fullPath As String, _
                         ByRef wsSummary As Worksheet, _
@@ -111,8 +112,10 @@ Private Sub ProcessFile(ByVal fullPath As String, _
     Dim wb As Workbook
     Dim ws As Worksheet
     Dim rngHeader As Range
-    Dim c As Range
     Dim fileNameOnly As String
+    Dim urlCol As Long
+    Dim startRow As Long
+    Dim r As Long
     
     On Error Resume Next
     Set wb = Workbooks.Open(fullPath, ReadOnly:=True)
@@ -141,22 +144,30 @@ Private Sub ProcessFile(ByVal fullPath As String, _
         
         If Not rngHeader Is Nothing Then
             
-            ' Start from the row under the header and go down
-            Set c = rngHeader.Offset(1, 0)
+            urlCol = rngHeader.Column
+            startRow = rngHeader.Row + 1
             
-            Do While Len(Trim(c.Value)) > 0
-                ' Write one row into the summary sheet
-                wsSummary.Cells(nextRow, 1).Value = fileNameOnly     ' Source File
-                wsSummary.Cells(nextRow, 2).Value = fullPath         ' Full Path
-                wsSummary.Cells(nextRow, 3).Value = c.Value          ' URL / IP
-                wsSummary.Cells(nextRow, 4).Value = c.Offset(0, 1).Value ' Asset Name
-                wsSummary.Cells(nextRow, 5).Value = c.Offset(0, 2).Value ' IT Support Owner
-                wsSummary.Cells(nextRow, 6).Value = c.Offset(0, 3).Value ' IDTS Sweep POC
+            ' Make sure we don't start beyond MAX_URL_ROW
+            If startRow <= MAX_URL_ROW Then
                 
-                nextRow = nextRow + 1
-                Set c = c.Offset(1, 0)
-            Loop
-            
+                ' Check each row under the header up to MAX_URL_ROW
+                For r = startRow To MAX_URL_ROW
+                    
+                    ' Only record rows where the URL/IP cell is not blank
+                    If Trim$(CStr(ws.Cells(r, urlCol).Value)) <> "" Then
+                        
+                        wsSummary.Cells(nextRow, 1).Value = fileNameOnly        ' Source File
+                        wsSummary.Cells(nextRow, 2).Value = fullPath            ' Full Path
+                        wsSummary.Cells(nextRow, 3).Value = ws.Cells(r, urlCol).Value          ' URL / IP
+                        wsSummary.Cells(nextRow, 4).Value = ws.Cells(r, urlCol + 1).Value      ' Asset Name
+                        wsSummary.Cells(nextRow, 5).Value = ws.Cells(r, urlCol + 2).Value      ' IT Support Owner
+                        wsSummary.Cells(nextRow, 6).Value = ws.Cells(r, urlCol + 3).Value      ' IDTS Sweep POC
+                        
+                        nextRow = nextRow + 1
+                    End If
+                Next r
+                
+            End If
         End If
     End If
     
@@ -165,6 +176,5 @@ Private Sub ProcessFile(ByVal fullPath As String, _
     Set ws = Nothing
     Set wb = Nothing
     Set rngHeader = Nothing
-    Set c = Nothing
 
 End Sub
