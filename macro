@@ -1,0 +1,170 @@
+Option Explicit
+
+'=== SETTINGS YOU CAN CHANGE ======================================
+Const TEMPLATE_SHEET As String = "Administrative Information"
+Const URL_HEADER     As String = "URLs / IPs"
+Const SUMMARY_SHEET  As String = "URL_List"
+'==================================================================
+
+Sub Collect_URLs_From_All_Subfolders()
+
+    Dim fldr As FileDialog
+    Dim rootPath As String
+    Dim wsSummary As Worksheet
+    Dim nextRow As Long
+    
+    '----------------------------------------
+    ' Let user choose the top-level folder
+    '----------------------------------------
+    Set fldr = Application.FileDialog(msoFileDialogFolderPicker)
+    With fldr
+        .Title = "Select TOP-LEVEL folder that contains all subfolders"
+        If .Show <> -1 Then Exit Sub   ' user cancelled
+        rootPath = .SelectedItems(1)
+    End With
+    
+    If Right(rootPath, 1) <> "\" Then rootPath = rootPath & "\"
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    
+    '----------------------------------------
+    ' Create / clear summary sheet
+    '----------------------------------------
+    On Error Resume Next
+    Set wsSummary = ThisWorkbook.Worksheets(SUMMARY_SHEET)
+    On Error GoTo 0
+    
+    If wsSummary Is Nothing Then
+        Set wsSummary = ThisWorkbook.Worksheets.Add
+        wsSummary.Name = SUMMARY_SHEET
+    End If
+    
+    wsSummary.Cells.Clear
+    
+    ' Headers
+    wsSummary.Range("A1").Value = "Source File"
+    wsSummary.Range("B1").Value = "Full Path"
+    wsSummary.Range("C1").Value = "URL / IP"
+    wsSummary.Range("D1").Value = "Asset Name"
+    wsSummary.Range("E1").Value = "IT Support Owner"
+    wsSummary.Range("F1").Value = "IDTS Sweep POC"
+    
+    nextRow = 2
+    
+    '----------------------------------------
+    ' Walk all folders & files
+    '----------------------------------------
+    ProcessFolder rootPath, wsSummary, nextRow
+    
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    
+    MsgBox "Done! Collected " & (nextRow - 2) & _
+           " URL rows into sheet '" & wsSummary.Name & "'.", vbInformation
+
+End Sub
+
+'=================================================================
+' Recursively process one folder and all its subfolders
+'=================================================================
+Private Sub ProcessFolder(ByVal folderPath As String, _
+                          ByRef wsSummary As Worksheet, _
+                          ByRef nextRow As Long)
+    
+    Dim fso As Object
+    Dim folder As Object
+    Dim subFolder As Object
+    Dim fileObj As Object
+    
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set folder = fso.GetFolder(folderPath)
+    
+    '------------- Handle all files in this folder -----------------
+    For Each fileObj In folder.Files
+        
+        ' Skip this workbook and temporary files like ~$
+        If LCase(fileObj.Name) <> LCase(ThisWorkbook.Name) _
+           And Left(fileObj.Name, 2) <> "~$" Then
+            
+            ' Only process Excel extensions
+            If LCase(fso.GetExtensionName(fileObj.Name)) Like "xls*" Then
+                ProcessFile CStr(fileObj.Path), wsSummary, nextRow
+            End If
+        End If
+    Next fileObj
+    
+    '------------- Recurse into subfolders -------------------------
+    For Each subFolder In folder.SubFolders
+        ProcessFolder subFolder.Path, wsSummary, nextRow
+    Next subFolder
+
+End Sub
+
+'=================================================================
+' Open a single workbook, read URLs section, write to summary
+'=================================================================
+Private Sub ProcessFile(ByVal fullPath As String, _
+                        ByRef wsSummary As Worksheet, _
+                        ByRef nextRow As Long)
+    
+    Dim wb As Workbook
+    Dim ws As Worksheet
+    Dim rngHeader As Range
+    Dim c As Range
+    Dim fileNameOnly As String
+    
+    On Error Resume Next
+    Set wb = Workbooks.Open(fullPath, ReadOnly:=True)
+    If wb Is Nothing Then
+        ' Could not open file; skip
+        Exit Sub
+    End If
+    On Error GoTo 0
+    
+    fileNameOnly = Dir(fullPath)
+    
+    ' Try to get the template sheet
+    On Error Resume Next
+    Set ws = wb.Worksheets(TEMPLATE_SHEET)
+    On Error GoTo 0
+    
+    If Not ws Is Nothing Then
+        
+        ' Find the "URLs / IPs" header cell
+        Set rngHeader = ws.Cells.Find(What:=URL_HEADER, _
+                                      LookIn:=xlValues, _
+                                      LookAt:=xlWhole, _
+                                      SearchOrder:=xlByRows, _
+                                      SearchDirection:=xlNext, _
+                                      MatchCase:=False)
+        
+        If Not rngHeader Is Nothing Then
+            
+            ' Start from the row under the header and go down
+            Set c = rngHeader.Offset(1, 0)
+            
+            Do While Len(Trim(c.Value)) > 0
+                ' Write one row into the summary sheet
+                wsSummary.Cells(nextRow, 1).Value = fileNameOnly     ' Source File
+                wsSummary.Cells(nextRow, 2).Value = fullPath         ' Full Path
+                wsSummary.Cells(nextRow, 3).Value = c.Value          ' URL / IP
+                wsSummary.Cells(nextRow, 4).Value = c.Offset(0, 1).Value ' Asset Name
+                wsSummary.Cells(nextRow, 5).Value = c.Offset(0, 2).Value ' IT Support Owner
+                wsSummary.Cells(nextRow, 6).Value = c.Offset(0, 3).Value ' IDTS Sweep POC
+                
+                nextRow = nextRow + 1
+                Set c = c.Offset(1, 0)
+            Loop
+            
+        End If
+    End If
+    
+    wb.Close SaveChanges:=False
+    
+    Set ws = Nothing
+    Set wb = Nothing
+    Set rngHeader = Nothing
+    Set c = Nothing
+
+End Sub
