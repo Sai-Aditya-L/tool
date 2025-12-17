@@ -1,0 +1,187 @@
+Option Explicit
+
+Public Sub Consolidate_AppDetails_FromFolder()
+
+    Dim folderPath As String, fileName As String, fullPath As String
+    Dim wb As Workbook, ws As Worksheet
+    Dim dest As Worksheet, logWs As Worksheet
+    Dim headerRow As Long, lastRow As Long
+    Dim destRow As Long, r As Long
+    Dim rngVals As Variant
+
+    '--- pick folder
+    folderPath = PickFolder()
+    If Len(folderPath) = 0 Then Exit Sub
+    If Right(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
+
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.EnableEvents = False
+
+    Set dest = GetOrCreateSheet(ThisWorkbook, "Consolidated")
+    Set logWs = GetOrCreateSheet(ThisWorkbook, "Log")
+
+    '--- set headers if empty
+    If dest.Cells(1, 1).Value = "" Then
+        dest.Range("A1:F1").Value = Array("App ID", "App Name", "DAI ID", "Data Class", "IT Function", "Source File")
+        dest.Rows(1).Font.Bold = True
+    End If
+
+    If logWs.Cells(1, 1).Value = "" Then
+        logWs.Range("A1:C1").Value = Array("File", "Status", "Notes")
+        logWs.Rows(1).Font.Bold = True
+    End If
+
+    '--- iterate files
+    fileName = Dir(folderPath & "*.xls*")
+    Do While Len(fileName) > 0
+
+        fullPath = folderPath & fileName
+
+        'skip the workbook that contains the macro if it's in the same folder
+        If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
+
+            On Error GoTo FileError
+            Set wb = Workbooks.Open(Filename:=fullPath, ReadOnly:=True, UpdateLinks:=False)
+
+            'Find the sheet (tries common name, then searches for "App ID" in column A)
+            Set ws = FindOutputSheet(wb)
+            If ws Is Nothing Then
+                LogLine logWs, fileName, "Skipped", "Could not find output sheet with App ID table."
+                GoTo CloseAndNext
+            End If
+
+            'Find header row (where column A contains "App ID")
+            headerRow = FindHeaderRow(ws, "App ID", 25)
+            If headerRow = 0 Then
+                LogLine logWs, fileName, "Skipped", "Found sheet but could not find header 'App ID'."
+                GoTo CloseAndNext
+            End If
+
+            lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+            If lastRow <= headerRow Then
+                LogLine logWs, fileName, "OK", "No data rows found."
+                GoTo CloseAndNext
+            End If
+
+            'Read A:E data into array for speed
+            rngVals = ws.Range("A" & (headerRow + 1) & ":E" & lastRow).Value
+
+            'Append rows (skip fully blank rows)
+            For r = 1 To UBound(rngVals, 1)
+                If Not IsRowBlank(rngVals, r) Then
+                    destRow = dest.Cells(dest.Rows.Count, "A").End(xlUp).Row + 1
+                    dest.Cells(destRow, 1).Value = rngVals(r, 1) 'App ID
+                    dest.Cells(destRow, 2).Value = rngVals(r, 2) 'App Name
+                    dest.Cells(destRow, 3).Value = rngVals(r, 3) 'DAI ID
+                    dest.Cells(destRow, 4).Value = rngVals(r, 4) 'Data Class
+                    dest.Cells(destRow, 5).Value = rngVals(r, 5) 'IT Function
+                    dest.Cells(destRow, 6).Value = fileName       'Source File
+                End If
+            Next r
+
+            LogLine logWs, fileName, "OK", "Imported rows from: " & ws.Name
+
+CloseAndNext:
+            On Error Resume Next
+            wb.Close SaveChanges:=False
+            On Error GoTo 0
+        End If
+
+        fileName = Dir()
+        DoEvents
+    Loop
+
+Cleanup:
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+
+    MsgBox "Done. Check 'Consolidated' for output and 'Log' for any skipped files.", vbInformation
+    Exit Sub
+
+FileError:
+    LogLine logWs, fileName, "Error", Err.Description
+    On Error Resume Next
+    If Not wb Is Nothing Then wb.Close SaveChanges:=False
+    On Error GoTo 0
+    Resume CloseAndNext
+
+End Sub
+
+'========================
+' Helpers
+'========================
+
+Private Function PickFolder() As String
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFolderPicker)
+    fd.Title = "Select folder containing Excel files"
+    If fd.Show = -1 Then
+        PickFolder = fd.SelectedItems(1)
+    Else
+        PickFolder = ""
+    End If
+End Function
+
+Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set GetOrCreateSheet = wb.Worksheets(sheetName)
+    On Error GoTo 0
+    If GetOrCreateSheet Is Nothing Then
+        Set GetOrCreateSheet = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        GetOrCreateSheet.Name = sheetName
+    End If
+End Function
+
+Private Sub LogLine(ByVal logWs As Worksheet, ByVal fileName As String, ByVal status As String, ByVal notes As String)
+    Dim lr As Long
+    lr = logWs.Cells(logWs.Rows.Count, "A").End(xlUp).Row + 1
+    logWs.Cells(lr, 1).Value = fileName
+    logWs.Cells(lr, 2).Value = status
+    logWs.Cells(lr, 3).Value = notes
+End Sub
+
+Private Function FindOutputSheet(ByVal wb As Workbook) As Worksheet
+    Dim ws As Worksheet
+
+    'Try common sheet name first (based on your Image 1 tab)
+    For Each ws In wb.Worksheets
+        If LCase(ws.Name) Like "*power bi upload*" Then
+            Set FindOutputSheet = ws
+            Exit Function
+        End If
+    Next ws
+
+    'Fallback: find any sheet that has "App ID" in column A near the top
+    For Each ws In wb.Worksheets
+        If FindHeaderRow(ws, "App ID", 25) > 0 Then
+            Set FindOutputSheet = ws
+            Exit Function
+        End If
+    Next ws
+
+    Set FindOutputSheet = Nothing
+End Function
+
+Private Function FindHeaderRow(ByVal ws As Worksheet, ByVal headerText As String, ByVal scanRows As Long) As Long
+    Dim r As Long
+    For r = 1 To scanRows
+        If Trim$(CStr(ws.Cells(r, 1).Value)) = headerText Then
+            FindHeaderRow = r
+            Exit Function
+        End If
+    Next r
+    FindHeaderRow = 0
+End Function
+
+Private Function IsRowBlank(ByVal arr As Variant, ByVal rowIndex As Long) As Boolean
+    Dim c As Long
+    For c = 1 To 5 'A:E
+        If Len(Trim$(CStr(arr(rowIndex, c)))) > 0 Then
+            IsRowBlank = False
+            Exit Function
+        End If
+    Next c
+    IsRowBlank = True
+End Function
