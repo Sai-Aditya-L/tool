@@ -1,10 +1,11 @@
 Option Explicit
 
-Public Sub Build_CombinedMetrics_FromFolder()
+Public Sub Build_CombinedMetrics_FromFolder_OutputTemplate()
 
-    Const TARGET_SHEET As String = "outputTemplate -Power BI Upload"
+    Const TARGET_SHEET As String = "outputTemplate - Power BI Upload"
+    'If your sheet name is "outputTemplate -Power BI Upload" (no space), change it here.
 
-    'Metrics columns you want in the final output (match is done loosely / case-insensitive)
+    'These become the columns in the combined metrics sheet
     Dim metricHeaders As Variant
     metricHeaders = Array( _
         "Access Control", _
@@ -25,15 +26,14 @@ Public Sub Build_CombinedMetrics_FromFolder()
     Dim outWs As Worksheet, logWs As Worksheet
     Dim outRow As Long
 
-    Dim cellPolSub As Range
-    Dim polSubCol As Long, headerRow As Long, lastRow As Long
+    Dim polSubCell As Range, polSubCol As Long, headerRow As Long, lastRow As Long
+    Dim respCols As Collection, respCol As Variant
 
-    Dim cellAppNameLbl As Range, cellITFuncLbl As Range, cellDataClassLbl As Range, cellNumAssetLbl As Range
-    Dim rowAppName As Long, rowITFunc As Long, rowDataClass As Long, rowNumAsset As Long
-    Dim labelCol As Long, startCol As Long, endCol As Long, c As Long
+    'Label rows (optional but used when present)
+    Dim rAppName As Long, rITFunc As Long, rDataClass As Long, rDAIID As Long, rAppID As Long, rNumAsset As Long
 
-    Dim appName As String, itFunc As String, dataClass As String, numAsset As String
-    Dim m As Long, metricVal As String
+    Dim appName As String, itFunc As String, dataClass As String, daiId As String, appId As String, numAsset As String
+    Dim m As Long
 
     folderPath = PickFolder()
     If Len(folderPath) = 0 Then Exit Sub
@@ -46,21 +46,23 @@ Public Sub Build_CombinedMetrics_FromFolder()
     Set outWs = GetOrCreateSheet(ThisWorkbook, "Combined Metrics")
     Set logWs = GetOrCreateSheet(ThisWorkbook, "Log")
 
-    'Build output headers
+    'Output header
     If outWs.Cells(1, 1).Value = "" Then
         outWs.Cells(1, 1).Value = "IT Function"
         outWs.Cells(1, 2).Value = "Application/Site Name"
         outWs.Cells(1, 3).Value = "Data Class"
-        outWs.Cells(1, 4).Value = "Number of Asset"
+        outWs.Cells(1, 4).Value = "DAI ID"
+        outWs.Cells(1, 5).Value = "App ID"
+        outWs.Cells(1, 6).Value = "Number of Asset"
         For m = LBound(metricHeaders) To UBound(metricHeaders)
-            outWs.Cells(1, 5 + m).Value = metricHeaders(m)
+            outWs.Cells(1, 7 + m).Value = metricHeaders(m)
         Next m
-        outWs.Cells(1, 5 + UBound(metricHeaders) + 1).Value = "Source File"
-
+        outWs.Cells(1, 7 + UBound(metricHeaders) + 1).Value = "Source File"
         outWs.Rows(1).Font.Bold = True
-        outWs.Columns.NumberFormat = "@"
+        outWs.Columns.NumberFormat = "@" 'keep IDs as text
     End If
 
+    'Log header
     If logWs.Cells(1, 1).Value = "" Then
         logWs.Range("A1:C1").Value = Array("File", "Status", "Notes")
         logWs.Rows(1).Font.Bold = True
@@ -76,7 +78,7 @@ Public Sub Build_CombinedMetrics_FromFolder()
             On Error GoTo FileError
             Set wb = Workbooks.Open(Filename:=fullPath, ReadOnly:=True, UpdateLinks:=False)
 
-            'Target sheet
+            Set ws = Nothing
             On Error Resume Next
             Set ws = wb.Worksheets(TARGET_SHEET)
             On Error GoTo 0
@@ -86,79 +88,79 @@ Public Sub Build_CombinedMetrics_FromFolder()
                 GoTo CloseAndNext
             End If
 
-            'Find Policy Sub-Domain header anywhere (needed for metrics)
-            Set cellPolSub = FindTextCell(ws, "Policy Sub-Domain")
-            If cellPolSub Is Nothing Then
-                LogLine logWs, fileName, "Skipped", "Could not find header: Policy Sub-Domain"
+            'Find Policy Sub-Domain header anywhere
+            Set polSubCell = FindTextCell(ws, "Policy Sub-Domain")
+            If polSubCell Is Nothing Then
+                LogLine logWs, fileName, "Skipped", "Could not find 'Policy Sub-Domain' header."
                 GoTo CloseAndNext
             End If
-            polSubCol = cellPolSub.Column
-            headerRow = cellPolSub.Row
+
+            polSubCol = polSubCell.Column
+            headerRow = polSubCell.Row
             lastRow = ws.Cells(ws.Rows.Count, polSubCol).End(xlUp).Row
-
-            'Find label rows (for app name / it function / data class / number of asset)
-            Set cellAppNameLbl = FindTextCell(ws, "Application Name")
-            If cellAppNameLbl Is Nothing Then Set cellAppNameLbl = FindTextCell(ws, "Application/Site Name") 'fallback
-
-            Set cellITFuncLbl = FindTextCell(ws, "IT Function")
-            Set cellDataClassLbl = FindTextCell(ws, "data class")
-            Set cellNumAssetLbl = FindTextCell(ws, "Number of Asset")
-
-            If cellAppNameLbl Is Nothing Then
-                LogLine logWs, fileName, "Skipped", "Could not find label row: Application Name"
+            If lastRow <= headerRow Then
+                LogLine logWs, fileName, "Skipped", "No data rows under Policy Sub-Domain header."
                 GoTo CloseAndNext
             End If
 
-            rowAppName = cellAppNameLbl.Row
-            rowITFunc = IIf(cellITFuncLbl Is Nothing, 0, cellITFuncLbl.Row)
-            rowDataClass = IIf(cellDataClassLbl Is Nothing, 0, cellDataClassLbl.Row)
-            rowNumAsset = IIf(cellNumAssetLbl Is Nothing, 0, cellNumAssetLbl.Row)
+            'Find label rows (if they exist)
+            rAppName = FindLabelRow(ws, "Application Name")
+            If rAppName = 0 Then rAppName = FindLabelRow(ws, "Application/Site Name")
+            rITFunc = FindLabelRow(ws, "IT Function")
+            rDataClass = FindLabelRow(ws, "data class")
+            rDAIID = FindLabelRow(ws, "DAI ID")
+            rAppID = FindLabelRow(ws, "app id")
+            rNumAsset = FindLabelRow(ws, "Number of Asset")
 
-            'Label column = leftmost among found labels
-            labelCol = MinColNonZero(Array( _
-                cellAppNameLbl.Column, _
-                IIf(cellITFuncLbl Is Nothing, 0, cellITFuncLbl.Column), _
-                IIf(cellDataClassLbl Is Nothing, 0, cellDataClassLbl.Column), _
-                IIf(cellNumAssetLbl Is Nothing, 0, cellNumAssetLbl.Column) _
-            ))
-
-            startCol = labelCol + 1
-            endCol = ws.Cells(rowAppName, ws.Columns.Count).End(xlToLeft).Column
-
-            If endCol < startCol Then
-                LogLine logWs, fileName, "Skipped", "No application columns found to the right of label column."
+            'Find all response columns for applications
+            Set respCols = FindResponseColumns(ws, headerRow)
+            If respCols.Count = 0 Then
+                LogLine logWs, fileName, "Skipped", "No 'Response Yes/No' columns found."
                 GoTo CloseAndNext
             End If
 
-            'Loop each app column (only if Application Name exists in that column)
-            For c = startCol To endCol
+            'For each application response column, compute metrics
+            For Each respCol In respCols
 
-                appName = Trim$(ws.Cells(rowAppName, c).Text)
-                If Len(appName) = 0 Then GoTo NextAppCol
+                'App metadata from label rows (preferred). If label row not found, best-effort name from header area.
+                appName = IIf(rAppName > 0, Trim$(ws.Cells(rAppName, CLng(respCol)).Text), "")
+                If Len(appName) = 0 Then appName = GuessAppNameFromColumn(ws, CLng(respCol), headerRow)
 
-                itFunc = IIf(rowITFunc = 0, "", Trim$(ws.Cells(rowITFunc, c).Text))
-                dataClass = IIf(rowDataClass = 0, "", Trim$(ws.Cells(rowDataClass, c).Text))
-                numAsset = IIf(rowNumAsset = 0, "", Trim$(ws.Cells(rowNumAsset, c).Text))
+                itFunc = IIf(rITFunc > 0, Trim$(ws.Cells(rITFunc, CLng(respCol)).Text), "")
+                dataClass = IIf(rDataClass > 0, Trim$(ws.Cells(rDataClass, CLng(respCol)).Text), "")
+                daiId = IIf(rDAIID > 0, Trim$(ws.Cells(rDAIID, CLng(respCol)).Text), "")
+                appId = IIf(rAppID > 0, Trim$(ws.Cells(rAppID, CLng(respCol)).Text), "")
+                numAsset = IIf(rNumAsset > 0, Trim$(ws.Cells(rNumAsset, CLng(respCol)).Text), "")
+
+                'Skip empty columns that aren't really apps
+                If Len(appName) = 0 And Len(appId) = 0 Then GoTo NextResp
 
                 outRow = outWs.Cells(outWs.Rows.Count, "A").End(xlUp).Row + 1
 
                 outWs.Cells(outRow, 1).Value = itFunc
                 outWs.Cells(outRow, 2).Value = appName
                 outWs.Cells(outRow, 3).Value = dataClass
-                outWs.Cells(outRow, 4).Value = numAsset
+                outWs.Cells(outRow, 4).Value = daiId
+                outWs.Cells(outRow, 5).Value = appId
+                outWs.Cells(outRow, 6).Value = numAsset
 
-                'Compute each metric as Y/N from Policy Sub-Domain rows + this app column
                 For m = LBound(metricHeaders) To UBound(metricHeaders)
-                    metricVal = ComputeMetricYN(ws, headerRow + 1, lastRow, polSubCol, c, CStr(metricHeaders(m)))
-                    outWs.Cells(outRow, 5 + m).Value = metricVal
+                    outWs.Cells(outRow, 7 + m).Value = ComputeMetricYN( _
+                        ws:=ws, _
+                        rStart:=headerRow + 1, _
+                        rEnd:=lastRow, _
+                        polSubCol:=polSubCol, _
+                        appRespCol:=CLng(respCol), _
+                        metricName:=CStr(metricHeaders(m)) _
+                    )
                 Next m
 
-                outWs.Cells(outRow, 5 + UBound(metricHeaders) + 1).Value = fileName
+                outWs.Cells(outRow, 7 + UBound(metricHeaders) + 1).Value = fileName
 
-NextAppCol:
-            Next c
+NextResp:
+            Next respCol
 
-            LogLine logWs, fileName, "OK", "Imported metrics from " & TARGET_SHEET
+            LogLine logWs, fileName, "OK", "Imported metrics (" & respCols.Count & " app columns)."
 
 CloseAndNext:
             On Error Resume Next
@@ -190,71 +192,126 @@ FileError:
 End Sub
 
 '========================
-' Metric logic
+' Core logic helpers
 '========================
 
+'Find a row number where a label appears anywhere (used for "app id", "data class", etc.)
+Private Function FindLabelRow(ByVal ws As Worksheet, ByVal labelText As String) As Long
+    Dim c As Range
+    Set c = FindTextCell(ws, labelText)
+    If c Is Nothing Then
+        FindLabelRow = 0
+    Else
+        FindLabelRow = c.Row
+    End If
+End Function
+
+'Find all response columns that belong to applications.
+'Heuristic: header rows near the Policy header contain cells with "Response" and "Yes/No"
+Private Function FindResponseColumns(ByVal ws As Worksheet, ByVal policyHeaderRow As Long) As Collection
+    Dim cols As New Collection
+    Dim rng As Range, f As Range, firstAddr As String
+    Dim topRow As Long, botRow As Long
+    Dim col As Long, txt As String
+
+    'Search a reasonable header band above/around the policy header
+    topRow = Application.Max(1, policyHeaderRow - 20)
+    botRow = policyHeaderRow + 5
+
+    Set rng = ws.Range(ws.Cells(topRow, 1), ws.Cells(botRow, ws.UsedRange.Columns.Count))
+
+    Set f = rng.Find(What:="Response", LookIn:=xlValues, LookAt:=xlPart, _
+                     SearchOrder:=xlByRows, SearchDirection:=xlNext, MatchCase:=False)
+
+    If f Is Nothing Then
+        Set FindResponseColumns = cols
+        Exit Function
+    End If
+
+    firstAddr = f.Address
+    Do
+        txt = LCase$(Trim$(CStr(f.Text)))
+        'Must look like the Response header (avoid comments columns)
+        If InStr(txt, "response") > 0 And (InStr(txt, "yes/no") > 0 Or InStr(txt, "yes") > 0) Then
+            col = f.Column
+            AddUniqueCol cols, col
+        End If
+
+        Set f = rng.FindNext(f)
+    Loop While Not f Is Nothing And f.Address <> firstAddr
+
+    Set FindResponseColumns = cols
+End Function
+
+Private Sub AddUniqueCol(ByVal cols As Collection, ByVal col As Long)
+    Dim v As Variant
+    For Each v In cols
+        If CLng(v) = col Then Exit Sub
+    Next v
+    cols.Add col
+End Sub
+
+'Compute Y/N for a metric (Policy Sub-Domain bucket) for one app response column
 Private Function ComputeMetricYN(ByVal ws As Worksheet, ByVal rStart As Long, ByVal rEnd As Long, _
-                                 ByVal polSubCol As Long, ByVal appCol As Long, ByVal metricName As String) As String
+                                 ByVal polSubCol As Long, ByVal appRespCol As Long, ByVal metricName As String) As String
     Dim r As Long
-    Dim metricKey As String, subKey As String, resp As String
-    Dim hasAny As Boolean, hasFail As Boolean
+    Dim metricKey As String, subKey As String
+    Dim resp As String
+    Dim seenAny As Boolean
+    Dim anyNo As Boolean, anyYes As Boolean
 
     metricKey = Canonical(metricName)
-    hasAny = False
-    hasFail = False
+    seenAny = False: anyNo = False: anyYes = False
 
     For r = rStart To rEnd
         subKey = Canonical(ws.Cells(r, polSubCol).Text)
         If subKey = metricKey Then
-            resp = CanonicalResp(ws.Cells(r, appCol).Text)
 
-            If Len(resp) > 0 Then hasAny = True
+            resp = CanonicalResp(ws.Cells(r, appRespCol).Text)
+            If Len(resp) > 0 Then seenAny = True
 
-            'Treat these as failures -> N
+            'Fail signals -> N
             If resp = "no" Or resp = "n" Or resp = "notanswered" Or resp = "nr" Or resp = "n/r" Then
-                hasFail = True
+                anyNo = True
                 Exit For
+            End If
+
+            'Pass signals
+            If resp = "yes" Or resp = "y" Then anyYes = True
+        End If
+    Next r
+
+    If anyNo Then
+        ComputeMetricYN = "N"
+    ElseIf seenAny And anyYes Then
+        ComputeMetricYN = "Y"
+    ElseIf seenAny Then
+        'Only NA/blank responses found for that metric
+        ComputeMetricYN = ""
+    Else
+        ComputeMetricYN = ""
+    End If
+End Function
+
+'If Application Name label row isn't reliable, guess app name from the column header band
+Private Function GuessAppNameFromColumn(ByVal ws As Worksheet, ByVal col As Long, ByVal policyHeaderRow As Long) As String
+    Dim r As Long, topRow As Long
+    Dim best As String, cur As String
+
+    topRow = Application.Max(1, policyHeaderRow - 25)
+    best = ""
+
+    For r = topRow To policyHeaderRow
+        cur = Trim$(CStr(ws.Cells(r, col).Text))
+        If Len(cur) > Len(best) Then
+            'Avoid picking the response header itself
+            If InStr(LCase$(cur), "response") = 0 And InStr(LCase$(cur), "comments") = 0 Then
+                best = cur
             End If
         End If
     Next r
 
-    If hasFail Then
-        ComputeMetricYN = "N"
-    ElseIf hasAny Then
-        'No failures found among rows for that sub-domain => Y
-        ComputeMetricYN = "Y"
-    Else
-        ComputeMetricYN = "" 'no data found for that sub-domain
-    End If
-End Function
-
-Private Function Canonical(ByVal s As String) As String
-    Dim i As Long, ch As String, out As String
-    s = LCase$(Trim$(s))
-    out = ""
-    For i = 1 To Len(s)
-        ch = Mid$(s, i, 1)
-        If (ch >= "a" And ch <= "z") Or (ch >= "0" And ch <= "9") Then
-            out = out & ch
-        End If
-    Next i
-    Canonical = out
-End Function
-
-Private Function CanonicalResp(ByVal s As String) As String
-    s = LCase$(Trim$(s))
-    s = Replace(s, " ", "")
-    s = Replace(s, vbLf, "")
-    s = Replace(s, vbCr, "")
-
-    'Normalize common variations
-    If s = "yes" Or s = "y" Then CanonicalResp = "yes": Exit Function
-    If s = "no" Or s = "n" Then CanonicalResp = "no": Exit Function
-    If s = "n/a" Or s = "na" Then CanonicalResp = "na": Exit Function
-    If s = "notanswered" Or s = "notanswer" Then CanonicalResp = "notanswered": Exit Function
-    If s = "n/r" Or s = "nr" Then CanonicalResp = "n/r": Exit Function
-
-    CanonicalResp = s
+    GuessAppNameFromColumn = best
 End Function
 
 '========================
@@ -295,14 +352,28 @@ Private Function FindTextCell(ByVal ws As Worksheet, ByVal needle As String) As 
     Set FindTextCell = r
 End Function
 
-Private Function MinColNonZero(ByVal cols As Variant) As Long
-    Dim i As Long, v As Long, m As Long
-    m = 0
-    For i = LBound(cols) To UBound(cols)
-        v = CLng(cols(i))
-        If v > 0 Then
-            If m = 0 Or v < m Then m = v
-        End If
+Private Function Canonical(ByVal s As String) As String
+    Dim i As Long, ch As String, out As String
+    s = LCase$(Trim$(s))
+    out = ""
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If (ch >= "a" And ch <= "z") Or (ch >= "0" And ch <= "9") Then out = out & ch
     Next i
-    MinColNonZero = m
+    Canonical = out
+End Function
+
+Private Function CanonicalResp(ByVal s As String) As String
+    s = LCase$(Trim$(s))
+    s = Replace(s, " ", "")
+    s = Replace(s, vbLf, "")
+    s = Replace(s, vbCr, "")
+
+    If s = "yes" Or s = "y" Then CanonicalResp = "yes": Exit Function
+    If s = "no" Or s = "n" Then CanonicalResp = "no": Exit Function
+    If s = "n/a" Or s = "na" Then CanonicalResp = "na": Exit Function
+    If s = "notanswered" Or s = "notanswer" Then CanonicalResp = "notanswered": Exit Function
+    If s = "n/r" Or s = "nr" Then CanonicalResp = "n/r": Exit Function
+
+    CanonicalResp = s
 End Function
