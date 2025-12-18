@@ -1,0 +1,272 @@
+Option Explicit
+
+Public Sub Build_Simple_Compliance_FromFolder_WithAppName()
+
+    Const LABEL_COL As Long = 8        'H
+    Const APP_START_COL As Long = 9    'I
+    Const HEADER_ROW As Long = 3       'Row 3 (A3:G3 headers)
+    Const DATA_START_ROW As Long = 7   'questions start row
+    Const TARGET_SHEET As String = "OutputTemplate- Power BI Upload"
+
+    Dim folderPath As String, fileName As String, fullPath As String
+    Dim wb As Workbook, ws As Worksheet
+    Dim outWs As Worksheet, logWs As Worksheet
+    Dim outRow As Long
+
+    Dim lastAppCol As Long, appCol As Long
+    Dim lastRow As Long, r As Long
+
+    Dim qidCol As Long, polSubCol As Long
+    Dim itFunc As String, appName As String, dataClass As String
+    Dim qid As String, polSub As String
+    Dim rawResp As String, compYN As String
+
+    folderPath = PickFolderSafe()
+    If Len(folderPath) = 0 Then Exit Sub
+    If Right$(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
+
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.EnableEvents = False
+
+    Set outWs = GetOrCreateSheetSafe(ThisWorkbook, "Simple Compliance", True)
+    Set logWs = GetOrCreateSheetSafe(ThisWorkbook, "Log", True)
+
+    'Headers
+    outWs.Cells.Clear
+    outWs.Cells(1, 1).Value = "IT Function"
+    outWs.Cells(1, 2).Value = "App Name"
+    outWs.Cells(1, 3).Value = "Data Class"
+    outWs.Cells(1, 4).Value = "Question ID"
+    outWs.Cells(1, 5).Value = "Policy Sub-Domain"
+    outWs.Cells(1, 6).Value = "Compliance"
+    outWs.Rows(1).Font.Bold = True
+    outWs.Columns.NumberFormat = "@"
+    outRow = 1
+
+    'Log header
+    logWs.Cells.Clear
+    logWs.Cells(1, 1).Value = "File"
+    logWs.Cells(1, 2).Value = "Status"
+    logWs.Cells(1, 3).Value = "Notes"
+    logWs.Rows(1).Font.Bold = True
+
+    fileName = Dir(folderPath & "*.xls*")
+    Do While Len(fileName) > 0
+
+        fullPath = folderPath & fileName
+
+        If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
+
+            On Error GoTo FileError
+            Set wb = Workbooks.Open(Filename:=fullPath, ReadOnly:=True, UpdateLinks:=False)
+
+            Set ws = Nothing
+            On Error Resume Next
+            Set ws = wb.Worksheets(TARGET_SHEET)
+            On Error GoTo 0
+
+            If ws Is Nothing Then
+                LogLine logWs, fileName, "Skipped", "Sheet not found: " & TARGET_SHEET
+                GoTo CloseAndNext
+            End If
+
+            'Find required headers in A3:G3
+            qidCol = FindHeaderInRow(ws, HEADER_ROW, "Question ID", 1, 7)
+            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, HEADER_ROW, "QuestionID", 1, 7)
+
+            polSubCol = FindHeaderInRow(ws, HEADER_ROW, "Policy Sub-Domain", 1, 7)
+
+            If qidCol = 0 Then
+                LogLine logWs, fileName, "Skipped", "Could not find 'Question ID' in A3:G3."
+                GoTo CloseAndNext
+            End If
+
+            lastRow = ws.Cells(ws.Rows.Count, qidCol).End(xlUp).Row
+            If lastRow < DATA_START_ROW Then
+                LogLine logWs, fileName, "Skipped", "No question rows found (expected row 7+)."
+                GoTo CloseAndNext
+            End If
+
+            lastAppCol = ws.Cells(2, ws.Columns.Count).End(xlToLeft).Column
+            If lastAppCol < APP_START_COL Then
+                LogLine logWs, fileName, "Skipped", "No app columns found to the right of H."
+                GoTo CloseAndNext
+            End If
+
+            'Loop app columns
+            For appCol = APP_START_COL To lastAppCol
+
+                itFunc = Trim$(ws.Cells(1, appCol).Text)      'IT Function row
+                appName = Trim$(ws.Cells(2, appCol).Text)     'App Name row
+                dataClass = Trim$(ws.Cells(5, appCol).Text)   'Data Class row
+
+                'Skip empty columns
+                If Len(itFunc) = 0 And Len(appName) = 0 And Len(dataClass) = 0 Then GoTo NextApp
+
+                'Loop question rows
+                For r = DATA_START_ROW To lastRow
+
+                    qid = Trim$(ws.Cells(r, qidCol).Text)
+                    If Len(qid) = 0 Then GoTo NextRow
+
+                    polSub = IIf(polSubCol = 0, "", Trim$(ws.Cells(r, polSubCol).Text))
+
+                    rawResp = Trim$(ws.Cells(r, appCol).Text)
+                    compYN = Normalize_YNRNA_to_Y_BlankToN(rawResp)
+
+                    outRow = outRow + 1
+                    outWs.Cells(outRow, 1).Value = itFunc
+                    outWs.Cells(outRow, 2).Value = appName
+                    outWs.Cells(outRow, 3).Value = dataClass
+                    outWs.Cells(outRow, 4).Value = qid
+                    outWs.Cells(outRow, 5).Value = polSub
+                    outWs.Cells(outRow, 6).Value = compYN
+
+NextRow:
+                Next r
+
+NextApp:
+            Next appCol
+
+            LogLine logWs, fileName, "OK", "Processed."
+
+CloseAndNext:
+            On Error Resume Next
+            wb.Close SaveChanges:=False
+            On Error GoTo 0
+            Set ws = Nothing
+            Set wb = Nothing
+        End If
+
+        fileName = Dir()
+        DoEvents
+    Loop
+
+    outWs.Columns.AutoFit
+
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+
+    MsgBox "Done. Output is in 'Simple Compliance'.", vbInformation
+    Exit Sub
+
+FileError:
+    LogLine logWs, fileName, "Error", Err.Description
+    On Error Resume Next
+    If Not wb Is Nothing Then wb.Close SaveChanges:=False
+    On Error GoTo 0
+    Resume CloseAndNext
+
+End Sub
+
+
+'========================
+' Normalize:
+' Y, N/A, N/R => Y
+' N, blank, Not Answered => N
+'========================
+Private Function Normalize_YNRNA_to_Y_BlankToN(ByVal raw As String) As String
+    Dim s As String
+    s = LCase$(Trim$(raw))
+    s = Replace(s, vbCr, "")
+    s = Replace(s, vbLf, "")
+    s = Replace(s, " ", "")
+
+    If Len(s) = 0 Then Normalize_YNRNA_to_Y_BlankToN = "N": Exit Function
+    If s = "notanswered" Or s = "notanswer" Then Normalize_YNRNA_to_Y_BlankToN = "N": Exit Function
+
+    If s = "y" Or s = "yes" Then Normalize_YNRNA_to_Y_BlankToN = "Y": Exit Function
+    If s = "n" Or s = "no" Then Normalize_YNRNA_to_Y_BlankToN = "N": Exit Function
+
+    If s = "na" Or s = "n/a" Or s = "n-a" Then Normalize_YNRNA_to_Y_BlankToN = "Y": Exit Function
+    If s = "nr" Or s = "n/r" Or s = "n-r" Then Normalize_YNRNA_to_Y_BlankToN = "Y": Exit Function
+
+    Normalize_YNRNA_to_Y_BlankToN = "N"
+End Function
+
+
+'========================
+' Header finder (Row 3, A..G)
+'========================
+Private Function FindHeaderInRow(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerText As String, _
+                                 ByVal startCol As Long, ByVal endCol As Long) As Long
+    Dim c As Long
+    For c = startCol To endCol
+        If Canonical(ws.Cells(headerRow, c).Text) = Canonical(headerText) Then
+            FindHeaderInRow = c
+            Exit Function
+        End If
+    Next c
+    FindHeaderInRow = 0
+End Function
+
+Private Function Canonical(ByVal s As String) As String
+    Dim i As Long, ch As String, out As String
+    s = LCase$(Trim$(s))
+    out = ""
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If (ch >= "a" And ch <= "z") Or (ch >= "0" And ch <= "9") Then out = out & ch
+    Next i
+    Canonical = out
+End Function
+
+
+'========================
+' Folder picker (safe)
+'========================
+Private Function PickFolderSafe() As String
+    On Error GoTo Fallback
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFolderPicker)
+    fd.Title = "Select folder containing Excel files"
+    If fd.Show = -1 Then
+        PickFolderSafe = fd.SelectedItems(1)
+    Else
+        PickFolderSafe = ""
+    End If
+    Exit Function
+Fallback:
+    PickFolderSafe = InputBox("Paste the full folder path that contains the Excel files:", "Folder Path")
+End Function
+
+
+'========================
+' Sheet creator/clearer (safe)
+'========================
+Private Function GetOrCreateSheetSafe(ByVal wb As Workbook, ByVal sheetName As String, ByVal clearIfExists As Boolean) As Worksheet
+    Dim ws As Worksheet
+    On Error Resume Next
+    Set ws = wb.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If ws Is Nothing Then
+        Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        ws.Name = sheetName
+    ElseIf clearIfExists Then
+        On Error Resume Next
+        ws.Cells.Clear
+        If Err.Number <> 0 Then
+            Err.Clear
+            Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+            ws.Name = sheetName & " " & Format(Now, "hhmmss")
+        End If
+        On Error GoTo 0
+    End If
+
+    Set GetOrCreateSheetSafe = ws
+End Function
+
+
+'========================
+' Logging helper
+'========================
+Private Sub LogLine(ByVal logWs As Worksheet, ByVal fileName As String, ByVal status As String, ByVal notes As String)
+    Dim lr As Long
+    lr = logWs.Cells(logWs.Rows.Count, "A").End(xlUp).Row + 1
+    logWs.Cells(lr, 1).Value = fileName
+    logWs.Cells(lr, 2).Value = status
+    logWs.Cells(lr, 3).Value = notes
+End Sub
