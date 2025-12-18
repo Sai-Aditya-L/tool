@@ -1,34 +1,19 @@
-App Compliance (1 measure) :=
+Compliance % :=
 VAR Applicable =
     CALCULATE(
         COUNTROWS(Questions),
-        REMOVEFILTERS(Questions[IsCompliant]),
         FILTER(
             Questions,
-            VAR s = UPPER(TRIM(Questions[IsCompliant]))
-            RETURN s IN {"Y","N","NOT ANSWERED"}      -- exclude N/A and N/R
+            UPPER(TRIM(Questions[IsCompliant])) IN {"Y","N"}
         )
     )
 VAR Compliant =
     CALCULATE(
         COUNTROWS(Questions),
-        REMOVEFILTERS(Questions[IsCompliant]),
         FILTER(
             Questions,
-            VAR s = UPPER(TRIM(Questions[IsCompliant]))
-            RETURN s = "Y"
+            UPPER(TRIM(Questions[IsCompliant])) = "Y"
         )
     )
-VAR Pct = DIVIDE(Compliant, Applicable)
-VAR Status =
-    IF(
-        Applicable = 0,
-        BLANK(),
-        IF(Pct = 1, "Compliant", "Non-Compliant")
-    )
 RETURN
-IF(
-    ISBLANK(Status),
-    BLANK(),
-    Status & " | " & FORMAT(Pct, "0.00%")
-)
+DIVIDE(Compliant, Applicable)
