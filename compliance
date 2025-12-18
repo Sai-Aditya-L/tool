@@ -1,0 +1,308 @@
+Option Explicit
+
+Public Sub Build_CombinedMetrics_FromFolder()
+
+    Const TARGET_SHEET As String = "outputTemplate -Power BI Upload"
+
+    'Metrics columns you want in the final output (match is done loosely / case-insensitive)
+    Dim metricHeaders As Variant
+    metricHeaders = Array( _
+        "Access Control", _
+        "Configuration Management", _
+        "Cryptographic Protection", _
+        "Network Security", _
+        "Non-Prod Environment Controls", _
+        "Protection of Systems and Communications", _
+        "Secure Authentication", _
+        "System Logging & Monitoring", _
+        "System Security Testing", _
+        "Vulnerability management & Scanning", _
+        "Disaster Recovery" _
+    )
+
+    Dim folderPath As String, fileName As String, fullPath As String
+    Dim wb As Workbook, ws As Worksheet
+    Dim outWs As Worksheet, logWs As Worksheet
+    Dim outRow As Long
+
+    Dim cellPolSub As Range
+    Dim polSubCol As Long, headerRow As Long, lastRow As Long
+
+    Dim cellAppNameLbl As Range, cellITFuncLbl As Range, cellDataClassLbl As Range, cellNumAssetLbl As Range
+    Dim rowAppName As Long, rowITFunc As Long, rowDataClass As Long, rowNumAsset As Long
+    Dim labelCol As Long, startCol As Long, endCol As Long, c As Long
+
+    Dim appName As String, itFunc As String, dataClass As String, numAsset As String
+    Dim m As Long, metricVal As String
+
+    folderPath = PickFolder()
+    If Len(folderPath) = 0 Then Exit Sub
+    If Right(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
+
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.EnableEvents = False
+
+    Set outWs = GetOrCreateSheet(ThisWorkbook, "Combined Metrics")
+    Set logWs = GetOrCreateSheet(ThisWorkbook, "Log")
+
+    'Build output headers
+    If outWs.Cells(1, 1).Value = "" Then
+        outWs.Cells(1, 1).Value = "IT Function"
+        outWs.Cells(1, 2).Value = "Application/Site Name"
+        outWs.Cells(1, 3).Value = "Data Class"
+        outWs.Cells(1, 4).Value = "Number of Asset"
+        For m = LBound(metricHeaders) To UBound(metricHeaders)
+            outWs.Cells(1, 5 + m).Value = metricHeaders(m)
+        Next m
+        outWs.Cells(1, 5 + UBound(metricHeaders) + 1).Value = "Source File"
+
+        outWs.Rows(1).Font.Bold = True
+        outWs.Columns.NumberFormat = "@"
+    End If
+
+    If logWs.Cells(1, 1).Value = "" Then
+        logWs.Range("A1:C1").Value = Array("File", "Status", "Notes")
+        logWs.Rows(1).Font.Bold = True
+    End If
+
+    fileName = Dir(folderPath & "*.xls*")
+    Do While Len(fileName) > 0
+
+        fullPath = folderPath & fileName
+
+        If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
+
+            On Error GoTo FileError
+            Set wb = Workbooks.Open(Filename:=fullPath, ReadOnly:=True, UpdateLinks:=False)
+
+            'Target sheet
+            On Error Resume Next
+            Set ws = wb.Worksheets(TARGET_SHEET)
+            On Error GoTo 0
+
+            If ws Is Nothing Then
+                LogLine logWs, fileName, "Skipped", "Sheet not found: " & TARGET_SHEET
+                GoTo CloseAndNext
+            End If
+
+            'Find Policy Sub-Domain header anywhere (needed for metrics)
+            Set cellPolSub = FindTextCell(ws, "Policy Sub-Domain")
+            If cellPolSub Is Nothing Then
+                LogLine logWs, fileName, "Skipped", "Could not find header: Policy Sub-Domain"
+                GoTo CloseAndNext
+            End If
+            polSubCol = cellPolSub.Column
+            headerRow = cellPolSub.Row
+            lastRow = ws.Cells(ws.Rows.Count, polSubCol).End(xlUp).Row
+
+            'Find label rows (for app name / it function / data class / number of asset)
+            Set cellAppNameLbl = FindTextCell(ws, "Application Name")
+            If cellAppNameLbl Is Nothing Then Set cellAppNameLbl = FindTextCell(ws, "Application/Site Name") 'fallback
+
+            Set cellITFuncLbl = FindTextCell(ws, "IT Function")
+            Set cellDataClassLbl = FindTextCell(ws, "data class")
+            Set cellNumAssetLbl = FindTextCell(ws, "Number of Asset")
+
+            If cellAppNameLbl Is Nothing Then
+                LogLine logWs, fileName, "Skipped", "Could not find label row: Application Name"
+                GoTo CloseAndNext
+            End If
+
+            rowAppName = cellAppNameLbl.Row
+            rowITFunc = IIf(cellITFuncLbl Is Nothing, 0, cellITFuncLbl.Row)
+            rowDataClass = IIf(cellDataClassLbl Is Nothing, 0, cellDataClassLbl.Row)
+            rowNumAsset = IIf(cellNumAssetLbl Is Nothing, 0, cellNumAssetLbl.Row)
+
+            'Label column = leftmost among found labels
+            labelCol = MinColNonZero(Array( _
+                cellAppNameLbl.Column, _
+                IIf(cellITFuncLbl Is Nothing, 0, cellITFuncLbl.Column), _
+                IIf(cellDataClassLbl Is Nothing, 0, cellDataClassLbl.Column), _
+                IIf(cellNumAssetLbl Is Nothing, 0, cellNumAssetLbl.Column) _
+            ))
+
+            startCol = labelCol + 1
+            endCol = ws.Cells(rowAppName, ws.Columns.Count).End(xlToLeft).Column
+
+            If endCol < startCol Then
+                LogLine logWs, fileName, "Skipped", "No application columns found to the right of label column."
+                GoTo CloseAndNext
+            End If
+
+            'Loop each app column (only if Application Name exists in that column)
+            For c = startCol To endCol
+
+                appName = Trim$(ws.Cells(rowAppName, c).Text)
+                If Len(appName) = 0 Then GoTo NextAppCol
+
+                itFunc = IIf(rowITFunc = 0, "", Trim$(ws.Cells(rowITFunc, c).Text))
+                dataClass = IIf(rowDataClass = 0, "", Trim$(ws.Cells(rowDataClass, c).Text))
+                numAsset = IIf(rowNumAsset = 0, "", Trim$(ws.Cells(rowNumAsset, c).Text))
+
+                outRow = outWs.Cells(outWs.Rows.Count, "A").End(xlUp).Row + 1
+
+                outWs.Cells(outRow, 1).Value = itFunc
+                outWs.Cells(outRow, 2).Value = appName
+                outWs.Cells(outRow, 3).Value = dataClass
+                outWs.Cells(outRow, 4).Value = numAsset
+
+                'Compute each metric as Y/N from Policy Sub-Domain rows + this app column
+                For m = LBound(metricHeaders) To UBound(metricHeaders)
+                    metricVal = ComputeMetricYN(ws, headerRow + 1, lastRow, polSubCol, c, CStr(metricHeaders(m)))
+                    outWs.Cells(outRow, 5 + m).Value = metricVal
+                Next m
+
+                outWs.Cells(outRow, 5 + UBound(metricHeaders) + 1).Value = fileName
+
+NextAppCol:
+            Next c
+
+            LogLine logWs, fileName, "OK", "Imported metrics from " & TARGET_SHEET
+
+CloseAndNext:
+            On Error Resume Next
+            wb.Close SaveChanges:=False
+            On Error GoTo 0
+            Set ws = Nothing
+            Set wb = Nothing
+        End If
+
+        fileName = Dir()
+        DoEvents
+    Loop
+
+Cleanup:
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+
+    MsgBox "Done. See 'Combined Metrics' and 'Log'.", vbInformation
+    Exit Sub
+
+FileError:
+    LogLine logWs, fileName, "Error", Err.Description
+    On Error Resume Next
+    If Not wb Is Nothing Then wb.Close SaveChanges:=False
+    On Error GoTo 0
+    Resume CloseAndNext
+
+End Sub
+
+'========================
+' Metric logic
+'========================
+
+Private Function ComputeMetricYN(ByVal ws As Worksheet, ByVal rStart As Long, ByVal rEnd As Long, _
+                                 ByVal polSubCol As Long, ByVal appCol As Long, ByVal metricName As String) As String
+    Dim r As Long
+    Dim metricKey As String, subKey As String, resp As String
+    Dim hasAny As Boolean, hasFail As Boolean
+
+    metricKey = Canonical(metricName)
+    hasAny = False
+    hasFail = False
+
+    For r = rStart To rEnd
+        subKey = Canonical(ws.Cells(r, polSubCol).Text)
+        If subKey = metricKey Then
+            resp = CanonicalResp(ws.Cells(r, appCol).Text)
+
+            If Len(resp) > 0 Then hasAny = True
+
+            'Treat these as failures -> N
+            If resp = "no" Or resp = "n" Or resp = "notanswered" Or resp = "nr" Or resp = "n/r" Then
+                hasFail = True
+                Exit For
+            End If
+        End If
+    Next r
+
+    If hasFail Then
+        ComputeMetricYN = "N"
+    ElseIf hasAny Then
+        'No failures found among rows for that sub-domain => Y
+        ComputeMetricYN = "Y"
+    Else
+        ComputeMetricYN = "" 'no data found for that sub-domain
+    End If
+End Function
+
+Private Function Canonical(ByVal s As String) As String
+    Dim i As Long, ch As String, out As String
+    s = LCase$(Trim$(s))
+    out = ""
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If (ch >= "a" And ch <= "z") Or (ch >= "0" And ch <= "9") Then
+            out = out & ch
+        End If
+    Next i
+    Canonical = out
+End Function
+
+Private Function CanonicalResp(ByVal s As String) As String
+    s = LCase$(Trim$(s))
+    s = Replace(s, " ", "")
+    s = Replace(s, vbLf, "")
+    s = Replace(s, vbCr, "")
+
+    'Normalize common variations
+    If s = "yes" Or s = "y" Then CanonicalResp = "yes": Exit Function
+    If s = "no" Or s = "n" Then CanonicalResp = "no": Exit Function
+    If s = "n/a" Or s = "na" Then CanonicalResp = "na": Exit Function
+    If s = "notanswered" Or s = "notanswer" Then CanonicalResp = "notanswered": Exit Function
+    If s = "n/r" Or s = "nr" Then CanonicalResp = "n/r": Exit Function
+
+    CanonicalResp = s
+End Function
+
+'========================
+' Generic helpers
+'========================
+
+Private Function PickFolder() As String
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFolderPicker)
+    fd.Title = "Select folder containing Excel files"
+    If fd.Show = -1 Then PickFolder = fd.SelectedItems(1) Else PickFolder = ""
+End Function
+
+Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set GetOrCreateSheet = wb.Worksheets(sheetName)
+    On Error GoTo 0
+    If GetOrCreateSheet Is Nothing Then
+        Set GetOrCreateSheet = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        GetOrCreateSheet.Name = sheetName
+    End If
+End Function
+
+Private Sub LogLine(ByVal logWs As Worksheet, ByVal fileName As String, ByVal status As String, ByVal notes As String)
+    Dim lr As Long
+    lr = logWs.Cells(logWs.Rows.Count, "A").End(xlUp).Row + 1
+    logWs.Cells(lr, 1).Value = fileName
+    logWs.Cells(lr, 2).Value = status
+    logWs.Cells(lr, 3).Value = notes
+End Sub
+
+Private Function FindTextCell(ByVal ws As Worksheet, ByVal needle As String) As Range
+    Dim r As Range
+    On Error Resume Next
+    Set r = ws.UsedRange.Find(What:=needle, LookIn:=xlValues, LookAt:=xlPart, _
+                              SearchOrder:=xlByRows, SearchDirection:=xlNext, MatchCase:=False)
+    On Error GoTo 0
+    Set FindTextCell = r
+End Function
+
+Private Function MinColNonZero(ByVal cols As Variant) As Long
+    Dim i As Long, v As Long, m As Long
+    m = 0
+    For i = LBound(cols) To UBound(cols)
+        v = CLng(cols(i))
+        If v > 0 Then
+            If m = 0 Or v < m Then m = v
+        End If
+    Next i
+    MinColNonZero = m
+End Function
