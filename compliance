@@ -25,7 +25,7 @@ Public Sub Build_CombinedMetrics_FromFolder()
     Dim outRow As Long
 
     Dim polSubCol As Long, lastRow As Long
-    Dim firstAppCol As Long, lastAppCol As Long, c As Long
+    Dim firstAppCol As Long, lastAppCol As Long, respCol As Long, commentsCol As Long
     Dim m As Long
 
     Dim itFunc As String, appName As String, dataClass As String
@@ -45,13 +45,13 @@ Public Sub Build_CombinedMetrics_FromFolder()
     outWs.Cells.Clear
     logWs.Cells.Clear
 
-    'Base headers (like your screenshot)
+    'Base headers
     outWs.Cells(1, 1).Value = "IT Function"
     outWs.Cells(1, 2).Value = "Application/Site Name"
     outWs.Cells(1, 3).Value = "data class"
     outWs.Cells(1, 4).Value = "Number of Asset"
 
-    'Metric headers + Metric comment headers
+    'Metric headers + Metric comment headers (two columns per metric)
     For m = LBound(metricHeaders) To UBound(metricHeaders)
         outWs.Cells(1, 5 + (m * 2)).Value = metricHeaders(m)
         outWs.Cells(1, 6 + (m * 2)).Value = metricHeaders(m) & " - Comments"
@@ -105,7 +105,8 @@ Public Sub Build_CombinedMetrics_FromFolder()
                 GoTo CloseAndNext
             End If
 
-            'Apps run across row 2 starting at H (col 8)
+            'App response columns start at H (col 8). We treat each app as:
+            'Row 2 has Application Name, and responses are in the same column.
             firstAppCol = 8
             lastAppCol = ws.Cells(2, ws.Columns.Count).End(xlToLeft).Column
             If lastAppCol < firstAppCol Then
@@ -113,18 +114,21 @@ Public Sub Build_CombinedMetrics_FromFolder()
                 GoTo CloseAndNext
             End If
 
-            For c = firstAppCol To lastAppCol
+            For respCol = firstAppCol To lastAppCol
 
-                appName = Trim$(ws.Cells(2, c).Text)
+                appName = Trim$(ws.Cells(2, respCol).Text)
                 If Len(appName) = 0 Then GoTo NextApp 'skip non-app columns
 
-                itFunc = Trim$(ws.Cells(1, c).Text)
+                itFunc = Trim$(ws.Cells(1, respCol).Text)
 
-                appId = Trim$(ws.Cells(4, c).Text)
-                dataClass = Trim$(ws.Cells(5, c).Text)
-                daiId = Trim$(ws.Cells(6, c).Text)
+                appId = Trim$(ws.Cells(4, respCol).Text)
+                dataClass = Trim$(ws.Cells(5, respCol).Text)
+                daiId = Trim$(ws.Cells(6, respCol).Text)
 
-                numAsset = GetValueForLabel(ws, "Number of Asset", c, 1, 20, 8)
+                numAsset = GetValueForLabel(ws, "Number of Asset", respCol, 1, 20, 8)
+
+                'Comments column assumed to be next column to the right
+                commentsCol = respCol + 1
 
                 outRow = outRow + 1
                 outWs.Cells(outRow, 1).Value = itFunc
@@ -132,10 +136,10 @@ Public Sub Build_CombinedMetrics_FromFolder()
                 outWs.Cells(outRow, 3).Value = dataClass
                 outWs.Cells(outRow, 4).Value = numAsset
 
-                'Each metric occupies 2 columns: metric Y/N and metric comments
+                'Compute per metric (Y/N + Comments)
                 For m = LBound(metricHeaders) To UBound(metricHeaders)
                     Dim yn As String, cmts As String
-                    ComputeMetricYNAndComments ws, 7, lastRow, polSubCol, c, c + 1, CStr(metricHeaders(m)), yn, cmts
+                    ComputeMetricYNAndComments_Mapped ws, 7, lastRow, polSubCol, respCol, commentsCol, CStr(metricHeaders(m)), yn, cmts
 
                     outWs.Cells(outRow, 5 + (m * 2)).Value = yn
                     outWs.Cells(outRow, 6 + (m * 2)).Value = cmts
@@ -146,7 +150,7 @@ Public Sub Build_CombinedMetrics_FromFolder()
                 outWs.Cells(outRow, hiddenStartCol + 2).Value = fileName
 
 NextApp:
-            Next c
+            Next respCol
 
             LogLine logWs, fileName, "OK", "Imported."
 
@@ -162,7 +166,7 @@ CloseAndNext:
         DoEvents
     Loop
 
-    'Apply formatting to Y/N columns only (every other metric column)
+    'Format Y/N columns only (every other metric column)
     ApplyMetricsFormatting_AlternateCols outWs, 1, outRow, 5, 5 + (UBound(metricHeaders) * 2), 2
 
     'Hide helper cols
@@ -189,41 +193,47 @@ FileError:
 End Sub
 
 '========================
-' N/R is ignored (not required)
-' N causes N
-' Y causes Y (if no N)
-' NA/blank/NR do not decide
-' Comments are concatenated from the app comments column (response+1) for matching rows
+' Mapping rules requested:
+'   Y / YES -> Y
+'   N/A -> Y
+'   N/R -> Y
+'   No / N -> N
+'   Not Answered -> N
+'
+' Metric result rule:
+'   If any N exists in that metric rows -> N
+'   Else if any Y exists -> Y
+'   Else blank
+'
+' Comments are concatenated for the rows in that metric.
 '========================
-Private Sub ComputeMetricYNAndComments(ByVal ws As Worksheet, ByVal rStart As Long, ByVal rEnd As Long, _
-                                      ByVal polSubCol As Long, ByVal respCol As Long, ByVal commentsCol As Long, _
-                                      ByVal metricName As String, ByRef outYN As String, ByRef outComments As String)
+Private Sub ComputeMetricYNAndComments_Mapped(ByVal ws As Worksheet, ByVal rStart As Long, ByVal rEnd As Long, _
+                                             ByVal polSubCol As Long, ByVal respCol As Long, ByVal commentsCol As Long, _
+                                             ByVal metricName As String, ByRef outYN As String, ByRef outComments As String)
+
     Dim r As Long
     Dim keyMetric As String, keySub As String
-    Dim resp As String, cmt As String
-    Dim anyYes As Boolean, anyNo As Boolean
-    Dim dict As Object
+    Dim respClass As String
+    Dim anyY As Boolean, anyN As Boolean
+    Dim dict As Object, cmt As String
 
     keyMetric = Canonical(metricName)
-    anyYes = False: anyNo = False
-    Set dict = CreateObject("Scripting.Dictionary") 'dedupe comments
+    anyY = False: anyN = False
+    Set dict = CreateObject("Scripting.Dictionary")
 
     For r = rStart To rEnd
         keySub = Canonical(ws.Cells(r, polSubCol).Text)
         If keySub = keyMetric Then
 
-            resp = CanonicalResp(ws.Cells(r, respCol).Text)
+            respClass = NormalizeToYN(ws.Cells(r, respCol).Text)
 
-            'Treat N/R as NOT REQUIRED (ignored)
-            If resp = "no" Or resp = "n" Then
-                anyNo = True
-            ElseIf resp = "yes" Or resp = "y" Then
-                anyYes = True
-            Else
-                'na / nr / notanswered / blank => ignored for compliance
+            If respClass = "N" Then
+                anyN = True
+            ElseIf respClass = "Y" Then
+                anyY = True
             End If
 
-            'Collect comments (if any)
+            'Collect comments
             If commentsCol > 0 Then
                 cmt = Trim$(CStr(ws.Cells(r, commentsCol).Text))
                 If Len(cmt) > 0 Then
@@ -231,13 +241,13 @@ Private Sub ComputeMetricYNAndComments(ByVal ws As Worksheet, ByVal rStart As Lo
                 End If
             End If
 
-            If anyNo Then Exit For
+            If anyN Then Exit For
         End If
     Next r
 
-    If anyNo Then
+    If anyN Then
         outYN = "N"
-    ElseIf anyYes Then
+    ElseIf anyY Then
         outYN = "Y"
     Else
         outYN = ""
@@ -245,6 +255,27 @@ Private Sub ComputeMetricYNAndComments(ByVal ws As Worksheet, ByVal rStart As Lo
 
     outComments = JoinDictKeys(dict, " | ")
 End Sub
+
+'Convert raw response to Y/N per your mapping
+Private Function NormalizeToYN(ByVal raw As String) As String
+    Dim s As String
+    s = LCase$(Trim$(raw))
+    s = Replace(s, vbCr, "")
+    s = Replace(s, vbLf, "")
+    s = Replace(s, " ", "")
+
+    If s = "yes" Or s = "y" Then NormalizeToYN = "Y": Exit Function
+    If s = "no" Or s = "n" Then NormalizeToYN = "N": Exit Function
+
+    'N/A and N/R count as Y
+    If s = "na" Or s = "n/a" Then NormalizeToYN = "Y": Exit Function
+    If s = "nr" Or s = "n/r" Then NormalizeToYN = "Y": Exit Function
+
+    'Not Answered counts as N
+    If s = "notanswered" Or s = "notanswer" Then NormalizeToYN = "N": Exit Function
+
+    NormalizeToYN = "" 'unknown/blank
+End Function
 
 Private Function JoinDictKeys(ByVal dict As Object, ByVal sep As String) As String
     Dim k As Variant, s As String
@@ -255,9 +286,6 @@ Private Function JoinDictKeys(ByVal dict As Object, ByVal sep As String) As Stri
     JoinDictKeys = s
 End Function
 
-'========================
-' Find header in row A3:G3 etc.
-'========================
 Private Function FindHeaderInRow(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerText As String, _
                                  ByVal startCol As Long, ByVal endCol As Long) As Long
     Dim c As Long
@@ -282,14 +310,10 @@ Private Function GetValueForLabel(ByVal ws As Worksheet, ByVal labelText As Stri
     GetValueForLabel = ""
 End Function
 
-'========================
-' Formatting: apply to every other column (Y/N columns only)
-'========================
 Private Sub ApplyMetricsFormatting_AlternateCols(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal lastDataRow As Long, _
                                                 ByVal startCol As Long, ByVal endCol As Long, ByVal stepSize As Long)
     If lastDataRow < headerRow + 1 Then Exit Sub
 
-    'Header style
     With ws.Range(ws.Cells(headerRow, 1), ws.Cells(headerRow, endCol))
         .Interior.Color = RGB(0, 51, 102)
         .Font.Color = RGB(255, 255, 255)
@@ -297,7 +321,6 @@ Private Sub ApplyMetricsFormatting_AlternateCols(ByVal ws As Worksheet, ByVal he
         .HorizontalAlignment = xlCenter
     End With
 
-    'Borders
     With ws.Range(ws.Cells(headerRow, 1), ws.Cells(lastDataRow, endCol))
         .Borders.LineStyle = xlContinuous
         .Borders.Weight = xlThin
@@ -324,9 +347,6 @@ Private Sub ApplyMetricsFormatting_AlternateCols(ByVal ws As Worksheet, ByVal he
     Next col
 End Sub
 
-'========================
-' Generic helpers
-'========================
 Private Function PickFolder() As String
     Dim fd As FileDialog
     Set fd = Application.FileDialog(msoFileDialogFolderPicker)
@@ -361,21 +381,4 @@ Private Function Canonical(ByVal s As String) As String
         If (ch >= "a" And ch <= "z") Or (ch >= "0" And ch <= "9") Then out = out & ch
     Next i
     Canonical = out
-End Function
-
-Private Function CanonicalResp(ByVal s As String) As String
-    s = LCase$(Trim$(s))
-    s = Replace(s, " ", "")
-    s = Replace(s, vbLf, "")
-    s = Replace(s, vbCr, "")
-
-    If s = "yes" Or s = "y" Then CanonicalResp = "yes": Exit Function
-    If s = "no" Or s = "n" Then CanonicalResp = "no": Exit Function
-
-    'Treat NR / Not Answered / NA as non-decision for compliance
-    If s = "n/a" Or s = "na" Then CanonicalResp = "na": Exit Function
-    If s = "notanswered" Or s = "notanswer" Then CanonicalResp = "notanswered": Exit Function
-    If s = "n/r" Or s = "nr" Then CanonicalResp = "nr": Exit Function
-
-    CanonicalResp = s
 End Function
