@@ -1,0 +1,323 @@
+Option Explicit
+
+Public Sub Build_ComplianceByQuestionID_FromFolder()
+
+    Const TARGET_SHEET As String = "OutputTemplate- Power BI Upload"
+
+    Dim folderPath As String, fileName As String, fullPath As String
+    Dim wb As Workbook, ws As Worksheet
+    Dim outWs As Worksheet, logWs As Worksheet
+    Dim outRow As Long
+
+    Dim labelCol As Long, appStartCol As Long, lastAppCol As Long
+    Dim qidCol As Long, polSubCol As Long, qTextCol As Long, controlGroupCol As Long
+    Dim dataStartRow As Long, lastRow As Long
+
+    Dim appCol As Long, r As Long
+    Dim itFunc As String, appName As String, appId As String, dataClass As String, daiId As String, numAsset As String
+    Dim qid As String, polSub As String, qText As String, ctrlGrp As String, respYN As String
+
+    folderPath = PickFolder()
+    If Len(folderPath) = 0 Then Exit Sub
+    If Right(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
+
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.EnableEvents = False
+
+    Set outWs = GetOrCreateSheet(ThisWorkbook, "QuestionID Metrics")
+    Set logWs = GetOrCreateSheet(ThisWorkbook, "Log")
+    outWs.Cells.Clear
+    logWs.Cells.Clear
+
+    'Output headers
+    outWs.Range("A1:M1").Value = Array( _
+        "IT Function", _
+        "Application/Site Name", _
+        "App ID", _
+        "Data Class", _
+        "DAI ID", _
+        "Number of Asset", _
+        "Question ID", _
+        "Policy Sub-Domain", _
+        "Control Group", _
+        "Question Text", _
+        "Compliance (Y/N)", _
+        "Raw Response", _
+        "Source File" _
+    )
+    outWs.Rows(1).Font.Bold = True
+    outWs.Columns.NumberFormat = "@"
+
+    logWs.Range("A1:C1").Value = Array("File", "Status", "Notes")
+    logWs.Rows(1).Font.Bold = True
+
+    outRow = 1
+
+    fileName = Dir(folderPath & "*.xls*")
+    Do While Len(fileName) > 0
+
+        fullPath = folderPath & fileName
+
+        If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
+
+            On Error GoTo FileError
+            Set wb = Workbooks.Open(Filename:=fullPath, ReadOnly:=True, UpdateLinks:=False)
+
+            Set ws = Nothing
+            On Error Resume Next
+            Set ws = wb.Worksheets(TARGET_SHEET)
+            On Error GoTo 0
+
+            If ws Is Nothing Then
+                LogLine logWs, fileName, "Skipped", "Sheet not found: " & TARGET_SHEET
+                GoTo CloseAndNext
+            End If
+
+            '1) Find the "Application Name" label cell (usually H2) to locate app columns robustly
+            labelCol = FindLabelCol(ws)
+            If labelCol = 0 Then
+                LogLine logWs, fileName, "Skipped", "Could not find label 'Application Name' anywhere in top area."
+                GoTo CloseAndNext
+            End If
+
+            appStartCol = labelCol + 1
+
+            'Last app column = last nonblank in row 2 (application names row)
+            lastAppCol = ws.Cells(2, ws.Columns.Count).End(xlToLeft).Column
+            If lastAppCol < appStartCol Then
+                LogLine logWs, fileName, "Skipped", "No application columns found to the right of the label column."
+                GoTo CloseAndNext
+            End If
+
+            '2) Find question metadata columns in header row 3 (A3:G3 per your description; we search wider safely)
+            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 20)
+            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 20)
+
+            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 20)
+            qTextCol = FindHeaderInRow(ws, 3, "Question", 1, 20) 'optional
+            controlGroupCol = FindHeaderInRow(ws, 3, "Control Group", 1, 30) 'some templates place it here
+
+            'If Control Group header not found in row 3, try to find it anywhere near top and treat it as a column
+            If controlGroupCol = 0 Then
+                controlGroupCol = FindHeaderAnywhere(ws, "Control Group", 1, 12, 1, 40)
+            End If
+
+            If qidCol = 0 Then
+                LogLine logWs, fileName, "Skipped", "Could not find 'Question ID' in row 3."
+                GoTo CloseAndNext
+            End If
+
+            '3) Determine data start row (you said questions start at row 7)
+            dataStartRow = 7
+
+            'Determine last row using Question ID column
+            lastRow = ws.Cells(ws.Rows.Count, qidCol).End(xlUp).Row
+            If lastRow < dataStartRow Then
+                LogLine logWs, fileName, "Skipped", "No question rows found under Question ID."
+                GoTo CloseAndNext
+            End If
+
+            '4) Loop each application column and each question row
+            For appCol = appStartCol To lastAppCol
+
+                appName = Trim$(ws.Cells(2, appCol).Text)
+                If Len(appName) = 0 Then GoTo NextAppCol 'skip empty/non-app columns
+
+                itFunc = Trim$(ws.Cells(1, appCol).Text)
+
+                'Metadata rows (values across app columns)
+                appId = Trim$(ws.Cells(4, appCol).Text)
+                dataClass = Trim$(ws.Cells(5, appCol).Text)
+                daiId = Trim$(ws.Cells(6, appCol).Text)
+
+                'Optional number of asset (if exists as a label somewhere in label column area)
+                numAsset = GetValueForLabel(ws, "Number of Asset", appCol, 1, 25, labelCol)
+
+                For r = dataStartRow To lastRow
+
+                    qid = Trim$(ws.Cells(r, qidCol).Text)
+                    If Len(qid) = 0 Then GoTo NextQuestionRow
+
+                    polSub = IIf(polSubCol = 0, "", Trim$(ws.Cells(r, polSubCol).Text))
+                    qText = IIf(qTextCol = 0, "", Trim$(ws.Cells(r, qTextCol).Text))
+
+                    'Control Group value, if there is a control group column
+                    ctrlGrp = IIf(controlGroupCol = 0, "", Trim$(ws.Cells(r, controlGroupCol).Text))
+
+                    'Raw response in the app response column
+                    Dim rawResp As String
+                    rawResp = Trim$(ws.Cells(r, appCol).Text)
+
+                    respYN = NormalizeToYN(rawResp)
+
+                    outRow = outRow + 1
+                    outWs.Cells(outRow, 1).Value = itFunc
+                    outWs.Cells(outRow, 2).Value = appName
+                    outWs.Cells(outRow, 3).Value = appId
+                    outWs.Cells(outRow, 4).Value = dataClass
+                    outWs.Cells(outRow, 5).Value = daiId
+                    outWs.Cells(outRow, 6).Value = numAsset
+                    outWs.Cells(outRow, 7).Value = qid
+                    outWs.Cells(outRow, 8).Value = polSub
+                    outWs.Cells(outRow, 9).Value = ctrlGrp
+                    outWs.Cells(outRow, 10).Value = qText
+                    outWs.Cells(outRow, 11).Value = respYN
+                    outWs.Cells(outRow, 12).Value = rawResp
+                    outWs.Cells(outRow, 13).Value = fileName
+
+NextQuestionRow:
+                Next r
+
+NextAppCol:
+            Next appCol
+
+            LogLine logWs, fileName, "OK", "Imported per-question compliance."
+
+CloseAndNext:
+            On Error Resume Next
+            wb.Close SaveChanges:=False
+            On Error GoTo 0
+            Set ws = Nothing
+            Set wb = Nothing
+        End If
+
+        fileName = Dir()
+        DoEvents
+    Loop
+
+    outWs.Columns.AutoFit
+
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+
+    MsgBox "Done. Output is in 'QuestionID Metrics'.", vbInformation
+    Exit Sub
+
+FileError:
+    LogLine logWs, fileName, "Error", Err.Description
+    On Error Resume Next
+    If Not wb Is Nothing Then wb.Close SaveChanges:=False
+    On Error GoTo 0
+    Resume CloseAndNext
+
+End Sub
+
+'========================
+' Compliance mapping requested:
+'   Yes/Y -> Y
+'   N/A -> Y
+'   N/R -> Y
+'   No/N -> N
+'   Not Answered -> N
+'   else blank
+'========================
+Private Function NormalizeToYN(ByVal raw As String) As String
+    Dim s As String
+    s = LCase$(Trim$(raw))
+    s = Replace(s, vbCr, "")
+    s = Replace(s, vbLf, "")
+    s = Replace(s, " ", "")
+
+    If s = "yes" Or s = "y" Then NormalizeToYN = "Y": Exit Function
+    If s = "no" Or s = "n" Then NormalizeToYN = "N": Exit Function
+
+    If s = "na" Or s = "n/a" Then NormalizeToYN = "Y": Exit Function
+    If s = "nr" Or s = "n/r" Then NormalizeToYN = "Y": Exit Function
+
+    If s = "notanswered" Or s = "notanswer" Then NormalizeToYN = "N": Exit Function
+
+    NormalizeToYN = ""
+End Function
+
+'Find the label column by locating "Application Name" in the top area
+Private Function FindLabelCol(ByVal ws As Worksheet) As Long
+    Dim c As Range
+    Set c = FindHeaderAnywhere(ws, "Application Name", 1, 6, 1, 40)
+    If c Is Nothing Then Set c = FindHeaderAnywhere(ws, "Application/Site Name", 1, 6, 1, 40)
+    If c Is Nothing Then
+        FindLabelCol = 0
+    Else
+        FindLabelCol = c.Column
+    End If
+End Function
+
+Private Function FindHeaderInRow(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerText As String, _
+                                 ByVal startCol As Long, ByVal endCol As Long) As Long
+    Dim c As Long
+    For c = startCol To endCol
+        If Canonical(ws.Cells(headerRow, c).Text) = Canonical(headerText) Then
+            FindHeaderInRow = c
+            Exit Function
+        End If
+    Next c
+    FindHeaderInRow = 0
+End Function
+
+Private Function FindHeaderAnywhere(ByVal ws As Worksheet, ByVal headerText As String, _
+                                    ByVal rowStart As Long, ByVal rowEnd As Long, _
+                                    ByVal colStart As Long, ByVal colEnd As Long) As Range
+    Dim r As Long, c As Long
+    For r = rowStart To rowEnd
+        For c = colStart To colEnd
+            If Canonical(ws.Cells(r, c).Text) = Canonical(headerText) Then
+                Set FindHeaderAnywhere = ws.Cells(r, c)
+                Exit Function
+            End If
+        Next c
+    Next r
+    Set FindHeaderAnywhere = Nothing
+End Function
+
+'Read a "label row" style value: find label text in labelCol, then read that row's value from appCol
+Private Function GetValueForLabel(ByVal ws As Worksheet, ByVal labelText As String, ByVal appCol As Long, _
+                                  ByVal rowStart As Long, ByVal rowEnd As Long, ByVal labelCol As Long) As String
+    Dim r As Long
+    For r = rowStart To rowEnd
+        If Canonical(ws.Cells(r, labelCol).Text) = Canonical(labelText) Then
+            GetValueForLabel = Trim$(ws.Cells(r, appCol).Text)
+            Exit Function
+        End If
+    Next r
+    GetValueForLabel = ""
+End Function
+
+'========================
+' Generic helpers
+'========================
+Private Function PickFolder() As String
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFolderPicker)
+    fd.Title = "Select folder containing Excel files"
+    If fd.Show = -1 Then PickFolder = fd.SelectedItems(1) Else PickFolder = ""
+End Function
+
+Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set GetOrCreateSheet = wb.Worksheets(sheetName)
+    On Error GoTo 0
+    If GetOrCreateSheet Is Nothing Then
+        Set GetOrCreateSheet = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        GetOrCreateSheet.Name = sheetName
+    End If
+End Function
+
+Private Sub LogLine(ByVal logWs As Worksheet, ByVal fileName As String, ByVal status As String, ByVal notes As String)
+    Dim lr As Long
+    lr = logWs.Cells(logWs.Rows.Count, "A").End(xlUp).Row + 1
+    logWs.Cells(lr, 1).Value = fileName
+    logWs.Cells(lr, 2).Value = status
+    logWs.Cells(lr, 3).Value = notes
+End Sub
+
+Private Function Canonical(ByVal s As String) As String
+    Dim i As Long, ch As String, out As String
+    s = LCase$(Trim$(s))
+    out = ""
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If (ch >= "a" And ch <= "z") Or (ch >= "0" And ch <= "9") Then out = out & ch
+    Next i
+    Canonical = out
+End Function
