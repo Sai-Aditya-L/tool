@@ -1,8 +1,6 @@
 Option Explicit
 
-Public Sub Build_ComplianceByQuestionID_FromFolder()
-
-    Const TARGET_SHEET As String = "OutputTemplate- Power BI Upload"
+Public Sub Build_ComplianceByQuestionID_FromFolder_FIXED()
 
     Dim folderPath As String, fileName As String, fullPath As String
     Dim wb As Workbook, ws As Worksheet
@@ -15,7 +13,8 @@ Public Sub Build_ComplianceByQuestionID_FromFolder()
 
     Dim appCol As Long, r As Long
     Dim itFunc As String, appName As String, appId As String, dataClass As String, daiId As String, numAsset As String
-    Dim qid As String, polSub As String, qText As String, ctrlGrp As String, respYN As String
+    Dim qid As String, polSub As String, qText As String, ctrlGrp As String
+    Dim rawResp As String, respYN As String
 
     folderPath = PickFolder()
     If Len(folderPath) = 0 Then Exit Sub
@@ -53,6 +52,7 @@ Public Sub Build_ComplianceByQuestionID_FromFolder()
     logWs.Rows(1).Font.Bold = True
 
     outRow = 1
+    dataStartRow = 7
 
     fileName = Dir(folderPath & "*.xls*")
     Do While Len(fileName) > 0
@@ -64,76 +64,65 @@ Public Sub Build_ComplianceByQuestionID_FromFolder()
             On Error GoTo FileError
             Set wb = Workbooks.Open(Filename:=fullPath, ReadOnly:=True, UpdateLinks:=False)
 
-            Set ws = Nothing
-            On Error Resume Next
-            Set ws = wb.Worksheets(TARGET_SHEET)
-            On Error GoTo 0
-
+            'Get the template sheet safely (tries both names)
+            Set ws = GetTemplateSheet(wb)
             If ws Is Nothing Then
-                LogLine logWs, fileName, "Skipped", "Sheet not found: " & TARGET_SHEET
+                LogLine logWs, fileName, "Skipped", "Template sheet not found (tried both name variants)."
                 GoTo CloseAndNext
             End If
 
-            '1) Find the "Application Name" label cell (usually H2) to locate app columns robustly
-            labelCol = FindLabelCol(ws)
-            If labelCol = 0 Then
-                LogLine logWs, fileName, "Skipped", "Could not find label 'Application Name' anywhere in top area."
-                GoTo CloseAndNext
-            End If
+            'Find label column using "Application Name" label near top; fallback to H (=8)
+            labelCol = FindLabelColSafe(ws)
+            If labelCol = 0 Then labelCol = 8 'fallback to column H if not found
 
             appStartCol = labelCol + 1
-
-            'Last app column = last nonblank in row 2 (application names row)
             lastAppCol = ws.Cells(2, ws.Columns.Count).End(xlToLeft).Column
             If lastAppCol < appStartCol Then
-                LogLine logWs, fileName, "Skipped", "No application columns found to the right of the label column."
+                LogLine logWs, fileName, "Skipped", "No application columns found to the right of label column."
                 GoTo CloseAndNext
             End If
 
-            '2) Find question metadata columns in header row 3 (A3:G3 per your description; we search wider safely)
-            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 20)
-            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 20)
+            'Headers row (A3:G3 normally)
+            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 40)
+            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 40)
 
-            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 20)
-            qTextCol = FindHeaderInRow(ws, 3, "Question", 1, 20) 'optional
-            controlGroupCol = FindHeaderInRow(ws, 3, "Control Group", 1, 30) 'some templates place it here
+            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 40)
+            qTextCol = FindHeaderInRow(ws, 3, "Question", 1, 40)
 
-            'If Control Group header not found in row 3, try to find it anywhere near top and treat it as a column
+            'Control Group can be missing; find it safely (row 3 first, then top band)
+            controlGroupCol = FindHeaderInRow(ws, 3, "Control Group", 1, 60)
             If controlGroupCol = 0 Then
-                controlGroupCol = FindHeaderAnywhere(ws, "Control Group", 1, 12, 1, 40)
+                Dim cgCell As Range
+                Set cgCell = FindHeaderAnywhere(ws, "Control Group", 1, 15, 1, 80)
+                If Not cgCell Is Nothing Then controlGroupCol = cgCell.Column
             End If
 
             If qidCol = 0 Then
-                LogLine logWs, fileName, "Skipped", "Could not find 'Question ID' in row 3."
+                LogLine logWs, fileName, "Skipped", "Could not find 'Question ID' header in row 3."
                 GoTo CloseAndNext
             End If
 
-            '3) Determine data start row (you said questions start at row 7)
-            dataStartRow = 7
-
-            'Determine last row using Question ID column
             lastRow = ws.Cells(ws.Rows.Count, qidCol).End(xlUp).Row
             If lastRow < dataStartRow Then
                 LogLine logWs, fileName, "Skipped", "No question rows found under Question ID."
                 GoTo CloseAndNext
             End If
 
-            '4) Loop each application column and each question row
+            'Loop apps
             For appCol = appStartCol To lastAppCol
 
                 appName = Trim$(ws.Cells(2, appCol).Text)
-                If Len(appName) = 0 Then GoTo NextAppCol 'skip empty/non-app columns
+                If Len(appName) = 0 Then GoTo NextAppCol
 
                 itFunc = Trim$(ws.Cells(1, appCol).Text)
 
-                'Metadata rows (values across app columns)
                 appId = Trim$(ws.Cells(4, appCol).Text)
                 dataClass = Trim$(ws.Cells(5, appCol).Text)
                 daiId = Trim$(ws.Cells(6, appCol).Text)
 
-                'Optional number of asset (if exists as a label somewhere in label column area)
-                numAsset = GetValueForLabel(ws, "Number of Asset", appCol, 1, 25, labelCol)
+                numAsset = GetValueForLabel(ws, "Number of Asset", appCol, 1, 30, labelCol)
 
+                'Loop questions
                 For r = dataStartRow To lastRow
 
                     qid = Trim$(ws.Cells(r, qidCol).Text)
@@ -141,14 +130,9 @@ Public Sub Build_ComplianceByQuestionID_FromFolder()
 
                     polSub = IIf(polSubCol = 0, "", Trim$(ws.Cells(r, polSubCol).Text))
                     qText = IIf(qTextCol = 0, "", Trim$(ws.Cells(r, qTextCol).Text))
-
-                    'Control Group value, if there is a control group column
                     ctrlGrp = IIf(controlGroupCol = 0, "", Trim$(ws.Cells(r, controlGroupCol).Text))
 
-                    'Raw response in the app response column
-                    Dim rawResp As String
                     rawResp = Trim$(ws.Cells(r, appCol).Text)
-
                     respYN = NormalizeToYN(rawResp)
 
                     outRow = outRow + 1
@@ -204,15 +188,22 @@ FileError:
 
 End Sub
 
-'========================
-' Compliance mapping requested:
-'   Yes/Y -> Y
-'   N/A -> Y
-'   N/R -> Y
-'   No/N -> N
-'   Not Answered -> N
-'   else blank
-'========================
+'--- Sheet getter: tries both common tab name variants
+Private Function GetTemplateSheet(ByVal wb As Workbook) As Worksheet
+    On Error Resume Next
+    Set GetTemplateSheet = wb.Worksheets("OutputTemplate- Power BI Upload")
+    If GetTemplateSheet Is Nothing Then
+        Set GetTemplateSheet = wb.Worksheets("OutputTemplate-Power BI Upload")
+    End If
+    On Error GoTo 0
+End Function
+
+'--- Compliance mapping requested:
+' Yes/Y -> Y
+' N/A -> Y
+' N/R -> Y
+' No/N -> N
+' Not Answered -> N
 Private Function NormalizeToYN(ByVal raw As String) As String
     Dim s As String
     s = LCase$(Trim$(raw))
@@ -222,24 +213,23 @@ Private Function NormalizeToYN(ByVal raw As String) As String
 
     If s = "yes" Or s = "y" Then NormalizeToYN = "Y": Exit Function
     If s = "no" Or s = "n" Then NormalizeToYN = "N": Exit Function
-
     If s = "na" Or s = "n/a" Then NormalizeToYN = "Y": Exit Function
     If s = "nr" Or s = "n/r" Then NormalizeToYN = "Y": Exit Function
-
     If s = "notanswered" Or s = "notanswer" Then NormalizeToYN = "N": Exit Function
 
     NormalizeToYN = ""
 End Function
 
-'Find the label column by locating "Application Name" in the top area
-Private Function FindLabelCol(ByVal ws As Worksheet) As Long
+'--- Find label col safely (returns 0 if not found)
+Private Function FindLabelColSafe(ByVal ws As Worksheet) As Long
     Dim c As Range
-    Set c = FindHeaderAnywhere(ws, "Application Name", 1, 6, 1, 40)
-    If c Is Nothing Then Set c = FindHeaderAnywhere(ws, "Application/Site Name", 1, 6, 1, 40)
+    Set c = FindHeaderAnywhere(ws, "Application Name", 1, 8, 1, 60)
+    If c Is Nothing Then Set c = FindHeaderAnywhere(ws, "Application/Site Name", 1, 8, 1, 60)
+
     If c Is Nothing Then
-        FindLabelCol = 0
+        FindLabelColSafe = 0
     Else
-        FindLabelCol = c.Column
+        FindLabelColSafe = c.Column
     End If
 End Function
 
@@ -270,7 +260,6 @@ Private Function FindHeaderAnywhere(ByVal ws As Worksheet, ByVal headerText As S
     Set FindHeaderAnywhere = Nothing
 End Function
 
-'Read a "label row" style value: find label text in labelCol, then read that row's value from appCol
 Private Function GetValueForLabel(ByVal ws As Worksheet, ByVal labelText As String, ByVal appCol As Long, _
                                   ByVal rowStart As Long, ByVal rowEnd As Long, ByVal labelCol As Long) As String
     Dim r As Long
@@ -283,9 +272,7 @@ Private Function GetValueForLabel(ByVal ws As Worksheet, ByVal labelText As Stri
     GetValueForLabel = ""
 End Function
 
-'========================
-' Generic helpers
-'========================
+'--- Generic helpers
 Private Function PickFolder() As String
     Dim fd As FileDialog
     Set fd = Application.FileDialog(msoFileDialogFolderPicker)
