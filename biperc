@@ -1,19 +1,25 @@
-Compliance % :=
-VAR Applicable =
+App Compliance % (Ignore other columns) :=
+VAR BaseContext =
+    ALLEXCEPT(Questions, Questions[App Name])   -- keep App, ignore everything else in the row
+
+VAR TotalResponses =
     CALCULATE(
         COUNTROWS(Questions),
+        BaseContext,
         FILTER(
             Questions,
             UPPER(TRIM(Questions[IsCompliant])) IN {"Y","N"}
         )
     )
-VAR Compliant =
+
+VAR YesResponses =
     CALCULATE(
         COUNTROWS(Questions),
+        BaseContext,
         FILTER(
             Questions,
             UPPER(TRIM(Questions[IsCompliant])) = "Y"
         )
     )
 RETURN
-DIVIDE(Compliant, Applicable)
+DIVIDE(YesResponses, TotalResponses)
