@@ -1,25 +1,42 @@
 Option Explicit
 
-Public Sub Build_ComplianceByQuestionID_FromFolder_FIXED()
+Public Sub Build_ComplianceByQuestionID_FromFolder_WithPolicyDomain()
 
+    '==== SETTINGS (your exact sheet/layout) ====
+    Const TARGET_SHEET As String = "outputTemplate-Power BI Upload"
+
+    Const LABEL_COL As Long = 8        'H column holds labels like "IT Function", "Application Name", etc.
+    Const APP_START_COL As Long = 9    'I column is the first app column
+    Const HEADER_ROW As Long = 3       'A3:H3 headers
+    Const DATA_START_ROW As Long = 7   'questions start at row 7
+
+    '==== Variables ====
     Dim folderPath As String, fileName As String, fullPath As String
     Dim wb As Workbook, ws As Worksheet
     Dim outWs As Worksheet, logWs As Worksheet
     Dim outRow As Long
 
-    Dim labelCol As Long, appStartCol As Long, lastAppCol As Long
-    Dim qidCol As Long, polSubCol As Long, qTextCol As Long, controlGroupCol As Long
-    Dim dataStartRow As Long, lastRow As Long
+    Dim lastAppCol As Long, appCol As Long
+    Dim lastRow As Long, r As Long
 
-    Dim appCol As Long, r As Long
-    Dim itFunc As String, appName As String, appId As String, dataClass As String, daiId As String, numAsset As String
-    Dim qid As String, polSub As String, qText As String, ctrlGrp As String
-    Dim rawResp As String, respYN As String
+    'Columns within A3:H3
+    Dim polDomainCol As Long, polSubDomainCol As Long
+    Dim qidCol As Long, qTextCol As Long, ctrlGrpCol As Long
 
+    'Per-app metadata
+    Dim itFunc As String, appName As String, appId As String, dataClass As String, daiId As String
+
+    'Per-row values
+    Dim polDomain As String, polSubDomain As String
+    Dim qid As String, qText As String, ctrlGrp As String
+    Dim rawResp As String, compYN As String
+
+    '==== Pick folder ====
     folderPath = PickFolder()
     If Len(folderPath) = 0 Then Exit Sub
-    If Right(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
+    If Right$(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
 
+    '==== Prep output sheets ====
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
     Application.EnableEvents = False
@@ -30,110 +47,111 @@ Public Sub Build_ComplianceByQuestionID_FromFolder_FIXED()
     logWs.Cells.Clear
 
     'Output headers
-    outWs.Range("A1:M1").Value = Array( _
+    outWs.Range("A1:N1").Value = Array( _
         "IT Function", _
         "Application/Site Name", _
         "App ID", _
         "Data Class", _
         "DAI ID", _
-        "Number of Asset", _
-        "Question ID", _
+        "Policy Domain", _
         "Policy Sub-Domain", _
+        "Question ID", _
         "Control Group", _
         "Question Text", _
         "Compliance (Y/N)", _
         "Raw Response", _
-        "Source File" _
+        "Source File", _
+        "Source Row" _
     )
     outWs.Rows(1).Font.Bold = True
     outWs.Columns.NumberFormat = "@"
+    outRow = 1
 
+    'Log headers
     logWs.Range("A1:C1").Value = Array("File", "Status", "Notes")
     logWs.Rows(1).Font.Bold = True
 
-    outRow = 1
-    dataStartRow = 7
-
+    '==== Iterate files in folder ====
     fileName = Dir(folderPath & "*.xls*")
     Do While Len(fileName) > 0
 
         fullPath = folderPath & fileName
 
+        'Skip the workbook containing the macro itself (if it happens to be in the same folder)
         If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
 
             On Error GoTo FileError
             Set wb = Workbooks.Open(Filename:=fullPath, ReadOnly:=True, UpdateLinks:=False)
 
-            'Get the template sheet safely (tries both names)
-            Set ws = GetTemplateSheet(wb)
+            'Get the sheet
+            Set ws = Nothing
+            On Error Resume Next
+            Set ws = wb.Worksheets(TARGET_SHEET)
+            On Error GoTo 0
+
             If ws Is Nothing Then
-                LogLine logWs, fileName, "Skipped", "Template sheet not found (tried both name variants)."
+                LogLine logWs, fileName, "Skipped", "Sheet not found: " & TARGET_SHEET
                 GoTo CloseAndNext
             End If
 
-            'Find label column using "Application Name" label near top; fallback to H (=8)
-            labelCol = FindLabelColSafe(ws)
-            If labelCol = 0 Then labelCol = 8 'fallback to column H if not found
+            'Find required headers in A3:H3
+            polDomainCol = FindHeaderInRow(ws, HEADER_ROW, "Policy Domain", 1, LABEL_COL)
+            polSubDomainCol = FindHeaderInRow(ws, HEADER_ROW, "Policy Sub-Domain", 1, LABEL_COL)
 
-            appStartCol = labelCol + 1
-            lastAppCol = ws.Cells(2, ws.Columns.Count).End(xlToLeft).Column
-            If lastAppCol < appStartCol Then
-                LogLine logWs, fileName, "Skipped", "No application columns found to the right of label column."
-                GoTo CloseAndNext
-            End If
+            qidCol = FindHeaderInRow(ws, HEADER_ROW, "Question ID", 1, LABEL_COL)
+            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, HEADER_ROW, "QuestionID", 1, LABEL_COL)
 
-            'Headers row (A3:G3 normally)
-            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 40)
-            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 40)
+            qTextCol = FindHeaderInRow(ws, HEADER_ROW, "Question Text", 1, LABEL_COL)
+            If qTextCol = 0 Then qTextCol = FindHeaderInRow(ws, HEADER_ROW, "Question", 1, LABEL_COL)
 
-            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 40)
-            qTextCol = FindHeaderInRow(ws, 3, "Question", 1, 40)
-
-            'Control Group can be missing; find it safely (row 3 first, then top band)
-            controlGroupCol = FindHeaderInRow(ws, 3, "Control Group", 1, 60)
-            If controlGroupCol = 0 Then
-                Dim cgCell As Range
-                Set cgCell = FindHeaderAnywhere(ws, "Control Group", 1, 15, 1, 80)
-                If Not cgCell Is Nothing Then controlGroupCol = cgCell.Column
-            End If
+            ctrlGrpCol = FindHeaderInRow(ws, HEADER_ROW, "Control Group", 1, LABEL_COL)
 
             If qidCol = 0 Then
-                LogLine logWs, fileName, "Skipped", "Could not find 'Question ID' header in row 3."
+                LogLine logWs, fileName, "Skipped", "Could not find 'Question ID' in A3:H3."
                 GoTo CloseAndNext
             End If
 
+            'Find last question row
             lastRow = ws.Cells(ws.Rows.Count, qidCol).End(xlUp).Row
-            If lastRow < dataStartRow Then
-                LogLine logWs, fileName, "Skipped", "No question rows found under Question ID."
+            If lastRow < DATA_START_ROW Then
+                LogLine logWs, fileName, "Skipped", "No question rows found (expected from row 7)."
                 GoTo CloseAndNext
             End If
 
-            'Loop apps
-            For appCol = appStartCol To lastAppCol
+            'Find last app column (application names row is row 2)
+            lastAppCol = ws.Cells(2, ws.Columns.Count).End(xlToLeft).Column
+            If lastAppCol < APP_START_COL Then
+                LogLine logWs, fileName, "Skipped", "No app columns found to the right of H."
+                GoTo CloseAndNext
+            End If
+
+            '==== Loop apps ====
+            For appCol = APP_START_COL To lastAppCol
 
                 appName = Trim$(ws.Cells(2, appCol).Text)
-                If Len(appName) = 0 Then GoTo NextAppCol
-
                 itFunc = Trim$(ws.Cells(1, appCol).Text)
 
+                'Skip empty columns
+                If Len(appName) = 0 And Len(itFunc) = 0 Then GoTo NextApp
+
+                'Metadata rows (H4:H6 labels, values in same app column)
                 appId = Trim$(ws.Cells(4, appCol).Text)
                 dataClass = Trim$(ws.Cells(5, appCol).Text)
                 daiId = Trim$(ws.Cells(6, appCol).Text)
 
-                numAsset = GetValueForLabel(ws, "Number of Asset", appCol, 1, 30, labelCol)
-
-                'Loop questions
-                For r = dataStartRow To lastRow
+                '==== Loop question rows ====
+                For r = DATA_START_ROW To lastRow
 
                     qid = Trim$(ws.Cells(r, qidCol).Text)
-                    If Len(qid) = 0 Then GoTo NextQuestionRow
+                    If Len(qid) = 0 Then GoTo NextRow
 
-                    polSub = IIf(polSubCol = 0, "", Trim$(ws.Cells(r, polSubCol).Text))
+                    polDomain = IIf(polDomainCol = 0, "", Trim$(ws.Cells(r, polDomainCol).Text))
+                    polSubDomain = IIf(polSubDomainCol = 0, "", Trim$(ws.Cells(r, polSubDomainCol).Text))
+                    ctrlGrp = IIf(ctrlGrpCol = 0, "", Trim$(ws.Cells(r, ctrlGrpCol).Text))
                     qText = IIf(qTextCol = 0, "", Trim$(ws.Cells(r, qTextCol).Text))
-                    ctrlGrp = IIf(controlGroupCol = 0, "", Trim$(ws.Cells(r, controlGroupCol).Text))
 
                     rawResp = Trim$(ws.Cells(r, appCol).Text)
-                    respYN = NormalizeToYN(rawResp)
+                    compYN = NormalizeToYN_BlankIsN(rawResp)
 
                     outRow = outRow + 1
                     outWs.Cells(outRow, 1).Value = itFunc
@@ -141,19 +159,20 @@ Public Sub Build_ComplianceByQuestionID_FromFolder_FIXED()
                     outWs.Cells(outRow, 3).Value = appId
                     outWs.Cells(outRow, 4).Value = dataClass
                     outWs.Cells(outRow, 5).Value = daiId
-                    outWs.Cells(outRow, 6).Value = numAsset
-                    outWs.Cells(outRow, 7).Value = qid
-                    outWs.Cells(outRow, 8).Value = polSub
+                    outWs.Cells(outRow, 6).Value = polDomain
+                    outWs.Cells(outRow, 7).Value = polSubDomain
+                    outWs.Cells(outRow, 8).Value = qid
                     outWs.Cells(outRow, 9).Value = ctrlGrp
                     outWs.Cells(outRow, 10).Value = qText
-                    outWs.Cells(outRow, 11).Value = respYN
+                    outWs.Cells(outRow, 11).Value = compYN
                     outWs.Cells(outRow, 12).Value = rawResp
                     outWs.Cells(outRow, 13).Value = fileName
+                    outWs.Cells(outRow, 14).Value = r
 
-NextQuestionRow:
+NextRow:
                 Next r
 
-NextAppCol:
+NextApp:
             Next appCol
 
             LogLine logWs, fileName, "OK", "Imported per-question compliance."
@@ -188,51 +207,35 @@ FileError:
 
 End Sub
 
-'--- Sheet getter: tries both common tab name variants
-Private Function GetTemplateSheet(ByVal wb As Workbook) As Worksheet
-    On Error Resume Next
-    Set GetTemplateSheet = wb.Worksheets("OutputTemplate- Power BI Upload")
-    If GetTemplateSheet Is Nothing Then
-        Set GetTemplateSheet = wb.Worksheets("OutputTemplate-Power BI Upload")
-    End If
-    On Error GoTo 0
-End Function
-
-'--- Compliance mapping requested:
-' Yes/Y -> Y
-' N/A -> Y
-' N/R -> Y
-' No/N -> N
-' Not Answered -> N
-Private Function NormalizeToYN(ByVal raw As String) As String
+'=========================================================
+' Compliance mapping (your latest rule)
+'  Y/Yes/N/A/N/R => Y
+'  N/No/Not Answered/Blank => N
+'=========================================================
+Private Function NormalizeToYN_BlankIsN(ByVal raw As String) As String
     Dim s As String
     s = LCase$(Trim$(raw))
     s = Replace(s, vbCr, "")
     s = Replace(s, vbLf, "")
     s = Replace(s, " ", "")
 
-    If s = "yes" Or s = "y" Then NormalizeToYN = "Y": Exit Function
-    If s = "no" Or s = "n" Then NormalizeToYN = "N": Exit Function
-    If s = "na" Or s = "n/a" Then NormalizeToYN = "Y": Exit Function
-    If s = "nr" Or s = "n/r" Then NormalizeToYN = "Y": Exit Function
-    If s = "notanswered" Or s = "notanswer" Then NormalizeToYN = "N": Exit Function
+    If Len(s) = 0 Then NormalizeToYN_BlankIsN = "N": Exit Function
 
-    NormalizeToYN = ""
+    If s = "y" Or s = "yes" Then NormalizeToYN_BlankIsN = "Y": Exit Function
+    If s = "n" Or s = "no" Then NormalizeToYN_BlankIsN = "N": Exit Function
+
+    If s = "na" Or s = "n/a" Or s = "n-a" Then NormalizeToYN_BlankIsN = "Y": Exit Function
+    If s = "nr" Or s = "n/r" Or s = "n-r" Then NormalizeToYN_BlankIsN = "Y": Exit Function
+
+    If s = "notanswered" Or s = "notanswer" Then NormalizeToYN_BlankIsN = "N": Exit Function
+
+    'Unknown values -> treat as N
+    NormalizeToYN_BlankIsN = "N"
 End Function
 
-'--- Find label col safely (returns 0 if not found)
-Private Function FindLabelColSafe(ByVal ws As Worksheet) As Long
-    Dim c As Range
-    Set c = FindHeaderAnywhere(ws, "Application Name", 1, 8, 1, 60)
-    If c Is Nothing Then Set c = FindHeaderAnywhere(ws, "Application/Site Name", 1, 8, 1, 60)
-
-    If c Is Nothing Then
-        FindLabelColSafe = 0
-    Else
-        FindLabelColSafe = c.Column
-    End If
-End Function
-
+'=========================================================
+' Find header in specific row range
+'=========================================================
 Private Function FindHeaderInRow(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerText As String, _
                                  ByVal startCol As Long, ByVal endCol As Long) As Long
     Dim c As Long
@@ -245,59 +248,6 @@ Private Function FindHeaderInRow(ByVal ws As Worksheet, ByVal headerRow As Long,
     FindHeaderInRow = 0
 End Function
 
-Private Function FindHeaderAnywhere(ByVal ws As Worksheet, ByVal headerText As String, _
-                                    ByVal rowStart As Long, ByVal rowEnd As Long, _
-                                    ByVal colStart As Long, ByVal colEnd As Long) As Range
-    Dim r As Long, c As Long
-    For r = rowStart To rowEnd
-        For c = colStart To colEnd
-            If Canonical(ws.Cells(r, c).Text) = Canonical(headerText) Then
-                Set FindHeaderAnywhere = ws.Cells(r, c)
-                Exit Function
-            End If
-        Next c
-    Next r
-    Set FindHeaderAnywhere = Nothing
-End Function
-
-Private Function GetValueForLabel(ByVal ws As Worksheet, ByVal labelText As String, ByVal appCol As Long, _
-                                  ByVal rowStart As Long, ByVal rowEnd As Long, ByVal labelCol As Long) As String
-    Dim r As Long
-    For r = rowStart To rowEnd
-        If Canonical(ws.Cells(r, labelCol).Text) = Canonical(labelText) Then
-            GetValueForLabel = Trim$(ws.Cells(r, appCol).Text)
-            Exit Function
-        End If
-    Next r
-    GetValueForLabel = ""
-End Function
-
-'--- Generic helpers
-Private Function PickFolder() As String
-    Dim fd As FileDialog
-    Set fd = Application.FileDialog(msoFileDialogFolderPicker)
-    fd.Title = "Select folder containing Excel files"
-    If fd.Show = -1 Then PickFolder = fd.SelectedItems(1) Else PickFolder = ""
-End Function
-
-Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
-    On Error Resume Next
-    Set GetOrCreateSheet = wb.Worksheets(sheetName)
-    On Error GoTo 0
-    If GetOrCreateSheet Is Nothing Then
-        Set GetOrCreateSheet = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
-        GetOrCreateSheet.Name = sheetName
-    End If
-End Function
-
-Private Sub LogLine(ByVal logWs As Worksheet, ByVal fileName As String, ByVal status As String, ByVal notes As String)
-    Dim lr As Long
-    lr = logWs.Cells(logWs.Rows.Count, "A").End(xlUp).Row + 1
-    logWs.Cells(lr, 1).Value = fileName
-    logWs.Cells(lr, 2).Value = status
-    logWs.Cells(lr, 3).Value = notes
-End Sub
-
 Private Function Canonical(ByVal s As String) As String
     Dim i As Long, ch As String, out As String
     s = LCase$(Trim$(s))
@@ -308,3 +258,41 @@ Private Function Canonical(ByVal s As String) As String
     Next i
     Canonical = out
 End Function
+
+'=========================================================
+' Folder picker
+'=========================================================
+Private Function PickFolder() As String
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFolderPicker)
+    fd.Title = "Select folder containing Excel files"
+    If fd.Show = -1 Then
+        PickFolder = fd.SelectedItems(1)
+    Else
+        PickFolder = ""
+    End If
+End Function
+
+'=========================================================
+' Get or create worksheet
+'=========================================================
+Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set GetOrCreateSheet = wb.Worksheets(sheetName)
+    On Error GoTo 0
+    If GetOrCreateSheet Is Nothing Then
+        Set GetOrCreateSheet = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        GetOrCreateSheet.Name = sheetName
+    End If
+End Function
+
+'=========================================================
+' Log helper
+'=========================================================
+Private Sub LogLine(ByVal logWs As Worksheet, ByVal fileName As String, ByVal status As String, ByVal notes As String)
+    Dim lr As Long
+    lr = logWs.Cells(logWs.Rows.Count, "A").End(xlUp).Row + 1
+    logWs.Cells(lr, 1).Value = fileName
+    logWs.Cells(lr, 2).Value = status
+    logWs.Cells(lr, 3).Value = notes
+End Sub
