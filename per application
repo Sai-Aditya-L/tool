@@ -1,16 +1,14 @@
 Option Explicit
 
-Public Sub Build_ComplianceByQuestionID_FromFolder_WithPolicyDomain()
+Public Sub Build_ComplianceByQuestionID_FromFolder_WithPolicyDomain_SAFE()
 
-    '==== SETTINGS (your exact sheet/layout) ====
     Const TARGET_SHEET As String = "outputTemplate-Power BI Upload"
 
-    Const LABEL_COL As Long = 8        'H column holds labels like "IT Function", "Application Name", etc.
-    Const APP_START_COL As Long = 9    'I column is the first app column
-    Const HEADER_ROW As Long = 3       'A3:H3 headers
-    Const DATA_START_ROW As Long = 7   'questions start at row 7
+    Const LABEL_COL As Long = 8        'H
+    Const APP_START_COL As Long = 9    'I
+    Const HEADER_ROW As Long = 3       'Row 3
+    Const DATA_START_ROW As Long = 7   'Row 7
 
-    '==== Variables ====
     Dim folderPath As String, fileName As String, fullPath As String
     Dim wb As Workbook, ws As Worksheet
     Dim outWs As Worksheet, logWs As Worksheet
@@ -19,71 +17,46 @@ Public Sub Build_ComplianceByQuestionID_FromFolder_WithPolicyDomain()
     Dim lastAppCol As Long, appCol As Long
     Dim lastRow As Long, r As Long
 
-    'Columns within A3:H3
     Dim polDomainCol As Long, polSubDomainCol As Long
     Dim qidCol As Long, qTextCol As Long, ctrlGrpCol As Long
 
-    'Per-app metadata
     Dim itFunc As String, appName As String, appId As String, dataClass As String, daiId As String
-
-    'Per-row values
-    Dim polDomain As String, polSubDomain As String
-    Dim qid As String, qText As String, ctrlGrp As String
+    Dim polDomain As String, polSubDomain As String, qid As String, qText As String, ctrlGrp As String
     Dim rawResp As String, compYN As String
 
-    '==== Pick folder ====
-    folderPath = PickFolder()
+    folderPath = PickFolderSafe()
     If Len(folderPath) = 0 Then Exit Sub
     If Right$(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
 
-    '==== Prep output sheets ====
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
     Application.EnableEvents = False
 
-    Set outWs = GetOrCreateSheet(ThisWorkbook, "QuestionID Metrics")
-    Set logWs = GetOrCreateSheet(ThisWorkbook, "Log")
-    outWs.Cells.Clear
+    Set logWs = GetOrCreateSheetSafe(ThisWorkbook, "Log", True)
+    Set outWs = GetOrCreateSheetSafe(ThisWorkbook, "QuestionID Metrics", True)
+
+    'Log header
     logWs.Cells.Clear
-
-    'Output headers
-    outWs.Range("A1:N1").Value = Array( _
-        "IT Function", _
-        "Application/Site Name", _
-        "App ID", _
-        "Data Class", _
-        "DAI ID", _
-        "Policy Domain", _
-        "Policy Sub-Domain", _
-        "Question ID", _
-        "Control Group", _
-        "Question Text", _
-        "Compliance (Y/N)", _
-        "Raw Response", _
-        "Source File", _
-        "Source Row" _
-    )
-    outWs.Rows(1).Font.Bold = True
-    outWs.Columns.NumberFormat = "@"
-    outRow = 1
-
-    'Log headers
-    logWs.Range("A1:C1").Value = Array("File", "Status", "Notes")
+    logWs.Cells(1, 1).Value = "File"
+    logWs.Cells(1, 2).Value = "Status"
+    logWs.Cells(1, 3).Value = "Notes"
     logWs.Rows(1).Font.Bold = True
 
-    '==== Iterate files in folder ====
+    'Output header (write cell-by-cell to avoid 1004 array assignment issues)
+    outWs.Cells.Clear
+    WriteHeaders outWs
+    outRow = 1
+
     fileName = Dir(folderPath & "*.xls*")
     Do While Len(fileName) > 0
 
         fullPath = folderPath & fileName
 
-        'Skip the workbook containing the macro itself (if it happens to be in the same folder)
         If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
 
             On Error GoTo FileError
             Set wb = Workbooks.Open(Filename:=fullPath, ReadOnly:=True, UpdateLinks:=False)
 
-            'Get the sheet
             Set ws = Nothing
             On Error Resume Next
             Set ws = wb.Worksheets(TARGET_SHEET)
@@ -94,7 +67,7 @@ Public Sub Build_ComplianceByQuestionID_FromFolder_WithPolicyDomain()
                 GoTo CloseAndNext
             End If
 
-            'Find required headers in A3:H3
+            'Headers live in A3:H3
             polDomainCol = FindHeaderInRow(ws, HEADER_ROW, "Policy Domain", 1, LABEL_COL)
             polSubDomainCol = FindHeaderInRow(ws, HEADER_ROW, "Policy Sub-Domain", 1, LABEL_COL)
 
@@ -111,35 +84,29 @@ Public Sub Build_ComplianceByQuestionID_FromFolder_WithPolicyDomain()
                 GoTo CloseAndNext
             End If
 
-            'Find last question row
             lastRow = ws.Cells(ws.Rows.Count, qidCol).End(xlUp).Row
             If lastRow < DATA_START_ROW Then
-                LogLine logWs, fileName, "Skipped", "No question rows found (expected from row 7)."
+                LogLine logWs, fileName, "Skipped", "No question rows found (expected row 7+)."
                 GoTo CloseAndNext
             End If
 
-            'Find last app column (application names row is row 2)
             lastAppCol = ws.Cells(2, ws.Columns.Count).End(xlToLeft).Column
             If lastAppCol < APP_START_COL Then
-                LogLine logWs, fileName, "Skipped", "No app columns found to the right of H."
+                LogLine logWs, fileName, "Skipped", "No app columns found (expected I and right)."
                 GoTo CloseAndNext
             End If
 
-            '==== Loop apps ====
             For appCol = APP_START_COL To lastAppCol
 
                 appName = Trim$(ws.Cells(2, appCol).Text)
                 itFunc = Trim$(ws.Cells(1, appCol).Text)
 
-                'Skip empty columns
                 If Len(appName) = 0 And Len(itFunc) = 0 Then GoTo NextApp
 
-                'Metadata rows (H4:H6 labels, values in same app column)
                 appId = Trim$(ws.Cells(4, appCol).Text)
                 dataClass = Trim$(ws.Cells(5, appCol).Text)
                 daiId = Trim$(ws.Cells(6, appCol).Text)
 
-                '==== Loop question rows ====
                 For r = DATA_START_ROW To lastRow
 
                     qid = Trim$(ws.Cells(r, qidCol).Text)
@@ -207,11 +174,30 @@ FileError:
 
 End Sub
 
-'=========================================================
-' Compliance mapping (your latest rule)
-'  Y/Yes/N/A/N/R => Y
-'  N/No/Not Answered/Blank => N
-'=========================================================
+'========================
+' Headers writer (safe)
+'========================
+Private Sub WriteHeaders(ByVal ws As Worksheet)
+    Dim headers As Variant, i As Long
+    headers = Array( _
+        "IT Function", "Application/Site Name", "App ID", "Data Class", "DAI ID", _
+        "Policy Domain", "Policy Sub-Domain", "Question ID", "Control Group", "Question Text", _
+        "Compliance (Y/N)", "Raw Response", "Source File", "Source Row" _
+    )
+
+    For i = LBound(headers) To UBound(headers)
+        ws.Cells(1, i + 1).Value = headers(i)
+    Next i
+
+    ws.Rows(1).Font.Bold = True
+    ws.Columns.NumberFormat = "@"
+End Sub
+
+'========================
+' Compliance mapping
+' Y/Yes/N-A/N-R => Y
+' N/No/Not Answered/Blank => N
+'========================
 Private Function NormalizeToYN_BlankIsN(ByVal raw As String) As String
     Dim s As String
     s = LCase$(Trim$(raw))
@@ -229,13 +215,12 @@ Private Function NormalizeToYN_BlankIsN(ByVal raw As String) As String
 
     If s = "notanswered" Or s = "notanswer" Then NormalizeToYN_BlankIsN = "N": Exit Function
 
-    'Unknown values -> treat as N
     NormalizeToYN_BlankIsN = "N"
 End Function
 
-'=========================================================
-' Find header in specific row range
-'=========================================================
+'========================
+' Header finder
+'========================
 Private Function FindHeaderInRow(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerText As String, _
                                  ByVal startCol As Long, ByVal endCol As Long) As Long
     Dim c As Long
@@ -259,36 +244,60 @@ Private Function Canonical(ByVal s As String) As String
     Canonical = out
 End Function
 
-'=========================================================
-' Folder picker
-'=========================================================
-Private Function PickFolder() As String
+'========================
+' Folder picker (SAFE)
+' 1) Try FileDialog
+' 2) If FileDialog throws 1004 -> fallback to InputBox
+'========================
+Private Function PickFolderSafe() As String
+    On Error GoTo Fallback
+
     Dim fd As FileDialog
     Set fd = Application.FileDialog(msoFileDialogFolderPicker)
     fd.Title = "Select folder containing Excel files"
     If fd.Show = -1 Then
-        PickFolder = fd.SelectedItems(1)
+        PickFolderSafe = fd.SelectedItems(1)
     Else
-        PickFolder = ""
+        PickFolderSafe = ""
     End If
+    Exit Function
+
+Fallback:
+    'If FileDialog fails (common source of 1004), user can paste path
+    PickFolderSafe = InputBox("Paste the full folder path that contains the Excel files:", "Folder Path")
 End Function
 
-'=========================================================
-' Get or create worksheet
-'=========================================================
-Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+'========================
+' Output sheet creator (SAFE)
+' If sheet is protected/locked and Clear fails, creates a new sheet name.
+'========================
+Private Function GetOrCreateSheetSafe(ByVal wb As Workbook, ByVal sheetName As String, ByVal clearIfExists As Boolean) As Worksheet
+    Dim ws As Worksheet
     On Error Resume Next
-    Set GetOrCreateSheet = wb.Worksheets(sheetName)
+    Set ws = wb.Worksheets(sheetName)
     On Error GoTo 0
-    If GetOrCreateSheet Is Nothing Then
-        Set GetOrCreateSheet = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
-        GetOrCreateSheet.Name = sheetName
+
+    If ws Is Nothing Then
+        Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        ws.Name = sheetName
+    ElseIf clearIfExists Then
+        On Error Resume Next
+        ws.Cells.Clear
+        If Err.Number <> 0 Then
+            Err.Clear
+            'Create a new sheet if existing can't be cleared
+            Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+            ws.Name = sheetName & " " & Format(Now, "hhmmss")
+        End If
+        On Error GoTo 0
     End If
+
+    Set GetOrCreateSheetSafe = ws
 End Function
 
-'=========================================================
-' Log helper
-'=========================================================
+'========================
+' Logging
+'========================
 Private Sub LogLine(ByVal logWs As Worksheet, ByVal fileName As String, ByVal status As String, ByVal notes As String)
     Dim lr As Long
     lr = logWs.Cells(logWs.Rows.Count, "A").End(xlUp).Row + 1
