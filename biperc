@@ -1,0 +1,75 @@
+Compliance (Status + %) :=
+/* Rules:
+   - Non-compliant if IsCompliant is N or Not Answered
+   - N/A and N/R are NOT treated as non-compliant (they don’t make an app fail)
+   - % is: (# fully compliant apps) / (# applicable apps) in the current selection
+*/
+
+VAR _PctForSelection =
+    VAR _Apps =
+        CALCULATETABLE(
+            ADDCOLUMNS(
+                VALUES(Questions[App Name]),
+                "Applicable",
+                    CALCULATE(
+                        COUNTROWS(Questions),
+                        FILTER(
+                            Questions,
+                            VAR s = UPPER(TRIM(Questions[IsCompliant]))
+                            RETURN s IN {"Y","N","N/A","N/R","NOT ANSWERED"}
+                        )
+                    ),
+                "Bad",
+                    CALCULATE(
+                        COUNTROWS(Questions),
+                        FILTER(
+                            Questions,
+                            VAR s = UPPER(TRIM(Questions[IsCompliant]))
+                            RETURN s IN {"N","NOT ANSWERED"}
+                        )
+                    )
+            ),
+            REMOVEFILTERS(Questions[App Name]),
+            REMOVEFILTERS(Questions[IsCompliant])
+        )
+    VAR _ApplicableApps = COUNTROWS(FILTER(_Apps, [Applicable] > 0))
+    VAR _CompliantApps  = COUNTROWS(FILTER(_Apps, [Applicable] > 0 && [Bad] = 0))
+    RETURN DIVIDE(_CompliantApps, _ApplicableApps)
+
+VAR _IsAppRow = ISINSCOPE(Questions[App Name])
+
+VAR _AppApplicable =
+    CALCULATE(
+        COUNTROWS(Questions),
+        REMOVEFILTERS(Questions[IsCompliant]),
+        FILTER(
+            Questions,
+            VAR s = UPPER(TRIM(Questions[IsCompliant]))
+            RETURN s IN {"Y","N","N/A","N/R","NOT ANSWERED"}
+        )
+    )
+
+VAR _AppBad =
+    CALCULATE(
+        COUNTROWS(Questions),
+        REMOVEFILTERS(Questions[IsCompliant]),
+        FILTER(
+            Questions,
+            VAR s = UPPER(TRIM(Questions[IsCompliant]))
+            RETURN s IN {"N","NOT ANSWERED"}
+        )
+    )
+
+VAR _AppStatus =
+    IF(_AppApplicable = 0, BLANK(), IF(_AppBad > 0, "Non-Compliant", "Compliant"))
+
+RETURN
+IF(
+    _IsAppRow,
+    IF(
+        ISBLANK(_AppStatus),
+        BLANK(),
+        _AppStatus & " | " & FORMAT(_PctForSelection, "0.00%")
+    ),
+    FORMAT(_PctForSelection, "0.00%")
+)
