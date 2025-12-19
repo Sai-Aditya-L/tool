@@ -1,0 +1,118 @@
+Option Explicit
+
+Sub CreateCompliancePercentPerApp()
+    Dim wsSrc As Worksheet, wsOut As Worksheet
+    Dim lastRow As Long, startRow As Long
+    Dim domainStartCol As Long, domainEndCol As Long
+    Dim r As Long, c As Long
+    Dim appName As String, itFunc As String
+    Dim v As Variant
+
+    '--- source sheet
+    Set wsSrc = ThisWorkbook.Worksheets("Combined Metrics")
+
+    '--- domain columns (adjust if needed)
+    domainStartCol = wsSrc.Range("E1").Column
+    domainEndCol = wsSrc.Range("O1").Column
+
+    '--- detect whether row 1 is headers or data
+    If LCase$(Trim$(CStr(wsSrc.Range("A1").Value))) = "it function" _
+       Or LCase$(Trim$(CStr(wsSrc.Range("B1").Value))) Like "*app*" Then
+        startRow = 2
+    Else
+        startRow = 1
+    End If
+
+    '--- last used row based on App Name column (B)
+    lastRow = wsSrc.Cells(wsSrc.Rows.Count, "B").End(xlUp).Row
+    If lastRow < startRow Then
+        MsgBox "No data found in 'Combined Metrics'.", vbExclamation
+        Exit Sub
+    End If
+
+    '--- dictionaries for aggregation per app
+    Dim dict As Object
+    Set dict = CreateObject("Scripting.Dictionary")
+    'dict(app) = Array(sum, count, itFunc, rowCount, maxValueSeen)
+
+    For r = startRow To lastRow
+        appName = Trim$(CStr(wsSrc.Cells(r, "B").Value))
+        If Len(appName) > 0 Then
+
+            itFunc = Trim$(CStr(wsSrc.Cells(r, "A").Value))
+
+            If Not dict.Exists(appName) Then
+                dict.Add appName, Array(0#, 0#, itFunc, 0#, 0#)
+            End If
+
+            Dim arr As Variant
+            arr = dict(appName)
+
+            'keep IT Function if we don't have one yet
+            If Len(arr(2)) = 0 And Len(itFunc) > 0 Then arr(2) = itFunc
+
+            arr(3) = arr(3) + 1 'rowCount
+
+            For c = domainStartCol To domainEndCol
+                v = wsSrc.Cells(r, c).Value
+                If IsNumeric(v) And Not IsEmpty(v) Then
+                    arr(0) = arr(0) + CDbl(v) 'sum
+                    arr(1) = arr(1) + 1      'count
+                    If CDbl(v) > arr(4) Then arr(4) = CDbl(v) 'max value seen
+                End If
+            Next c
+
+            dict(appName) = arr
+        End If
+    Next r
+
+    '--- create/replace output sheet
+    On Error Resume Next
+    Application.DisplayAlerts = False
+    ThisWorkbook.Worksheets("App Compliance Summary").Delete
+    Application.DisplayAlerts = True
+    On Error GoTo 0
+
+    Set wsOut = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+    wsOut.Name = "App Compliance Summary"
+
+    '--- headers
+    wsOut.Range("A1:E1").Value = Array("IT Function", "App Name", "Overall Compliance %", "Domains Count Used", "Source Rows")
+    wsOut.Rows(1).Font.Bold = True
+
+    '--- write results
+    Dim key As Variant, outRow As Long
+    Dim sumVal As Double, cntVal As Double, avgVal As Double, maxSeen As Double
+
+    outRow = 2
+    For Each key In dict.Keys
+        arr = dict(key)
+
+        sumVal = arr(0)
+        cntVal = arr(1)
+        maxSeen = arr(4)
+
+        If cntVal > 0 Then
+            avgVal = sumVal / cntVal
+
+            'If values look like 0-100 (instead of 0-1), convert to 0-1 for % formatting
+            If maxSeen > 1 Then avgVal = avgVal / 100#
+        Else
+            avgVal = 0
+        End If
+
+        wsOut.Cells(outRow, "A").Value = arr(2)          'IT Function
+        wsOut.Cells(outRow, "B").Value = CStr(key)       'App Name
+        wsOut.Cells(outRow, "C").Value = avgVal          'Overall %
+        wsOut.Cells(outRow, "D").Value = cntVal          'Domains count used
+        wsOut.Cells(outRow, "E").Value = arr(3)          'Source rows
+
+        outRow = outRow + 1
+    Next key
+
+    '--- formatting
+    wsOut.Columns("C").NumberFormat = "0.00%"
+    wsOut.Columns("A:E").AutoFit
+
+    MsgBox "Created 'App Compliance Summary' with compliance % per app.", vbInformation
+End Sub
