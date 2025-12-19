@@ -1,118 +1,106 @@
 Option Explicit
 
-Sub CreateCompliancePercentPerApp()
+Public Sub Build_App_Compliance_Summary()
     Dim wsSrc As Worksheet, wsOut As Worksheet
-    Dim lastRow As Long, startRow As Long
-    Dim domainStartCol As Long, domainEndCol As Long
+    Dim lastRow As Long, lastCol As Long
     Dim r As Long, c As Long
-    Dim appName As String, itFunc As String
-    Dim v As Variant
+    Dim appName As String, val As String
+    Dim key As Variant
 
-    '--- source sheet
-    Set wsSrc = ThisWorkbook.Worksheets("Combined Metrics")
+    '--- CONFIG (adjust if your layout changes)
+    Const SRC_SHEET As String = "Combined Metrics"
+    Const OUT_SHEET As String = "App Compliance Summary"
+    Const COL_APP As Long = 2          'Column B
+    Const FIRST_POLICY_COL As Long = 5 'Column E
+    Const LAST_POLICY_COL As Long = 15 'Column O
+    Const HEADER_ROW As Long = 1
+    Const FIRST_DATA_ROW As Long = 2
 
-    '--- domain columns (adjust if needed)
-    domainStartCol = wsSrc.Range("E1").Column
-    domainEndCol = wsSrc.Range("O1").Column
+    Set wsSrc = ThisWorkbook.Worksheets(SRC_SHEET)
 
-    '--- detect whether row 1 is headers or data
-    If LCase$(Trim$(CStr(wsSrc.Range("A1").Value))) = "it function" _
-       Or LCase$(Trim$(CStr(wsSrc.Range("B1").Value))) Like "*app*" Then
-        startRow = 2
+    'Create or clear output sheet
+    On Error Resume Next
+    Set wsOut = ThisWorkbook.Worksheets(OUT_SHEET)
+    On Error GoTo 0
+
+    If wsOut Is Nothing Then
+        Set wsOut = ThisWorkbook.Worksheets.Add(After:=wsSrc)
+        wsOut.Name = OUT_SHEET
     Else
-        startRow = 1
+        wsOut.Cells.Clear
     End If
 
-    '--- last used row based on App Name column (B)
-    lastRow = wsSrc.Cells(wsSrc.Rows.Count, "B").End(xlUp).Row
-    If lastRow < startRow Then
-        MsgBox "No data found in 'Combined Metrics'.", vbExclamation
+    'Find last row based on App column
+    lastRow = wsSrc.Cells(wsSrc.Rows.Count, COL_APP).End(xlUp).Row
+    If lastRow < FIRST_DATA_ROW Then
+        MsgBox "No data found under Application/SiteName (Column B).", vbExclamation
         Exit Sub
     End If
 
-    '--- dictionaries for aggregation per app
-    Dim dict As Object
-    Set dict = CreateObject("Scripting.Dictionary")
-    'dict(app) = Array(sum, count, itFunc, rowCount, maxValueSeen)
+    'Dictionaries for counts
+    Dim dictY As Object, dictN As Object
+    Set dictY = CreateObject("Scripting.Dictionary")
+    Set dictN = CreateObject("Scripting.Dictionary")
 
-    For r = startRow To lastRow
-        appName = Trim$(CStr(wsSrc.Cells(r, "B").Value))
+    'Loop through rows/apps and count Y/N across policy columns
+    For r = FIRST_DATA_ROW To lastRow
+        appName = Trim$(CStr(wsSrc.Cells(r, COL_APP).Value))
         If Len(appName) > 0 Then
 
-            itFunc = Trim$(CStr(wsSrc.Cells(r, "A").Value))
-
-            If Not dict.Exists(appName) Then
-                dict.Add appName, Array(0#, 0#, itFunc, 0#, 0#)
+            If Not dictY.Exists(appName) Then
+                dictY(appName) = 0
+                dictN(appName) = 0
             End If
 
-            Dim arr As Variant
-            arr = dict(appName)
+            For c = FIRST_POLICY_COL To LAST_POLICY_COL
+                val = UCase$(Trim$(CStr(wsSrc.Cells(r, c).Value)))
 
-            'keep IT Function if we don't have one yet
-            If Len(arr(2)) = 0 And Len(itFunc) > 0 Then arr(2) = itFunc
-
-            arr(3) = arr(3) + 1 'rowCount
-
-            For c = domainStartCol To domainEndCol
-                v = wsSrc.Cells(r, c).Value
-                If IsNumeric(v) And Not IsEmpty(v) Then
-                    arr(0) = arr(0) + CDbl(v) 'sum
-                    arr(1) = arr(1) + 1      'count
-                    If CDbl(v) > arr(4) Then arr(4) = CDbl(v) 'max value seen
+                If val = "Y" Then
+                    dictY(appName) = CLng(dictY(appName)) + 1
+                ElseIf val = "N" Then
+                    dictN(appName) = CLng(dictN(appName)) + 1
                 End If
             Next c
-
-            dict(appName) = arr
         End If
     Next r
 
-    '--- create/replace output sheet
-    On Error Resume Next
-    Application.DisplayAlerts = False
-    ThisWorkbook.Worksheets("App Compliance Summary").Delete
-    Application.DisplayAlerts = True
-    On Error GoTo 0
+    'Write output headers
+    wsOut.Range("A1").Value = "Application/SiteName"
+    wsOut.Range("B1").Value = "Total Y"
+    wsOut.Range("C1").Value = "Total N"
+    wsOut.Range("D1").Value = "Total Answered (Y+N)"
+    wsOut.Range("E1").Value = "Compliance % (Y/(Y+N))"
 
-    Set wsOut = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
-    wsOut.Name = "App Compliance Summary"
-
-    '--- headers
-    wsOut.Range("A1:E1").Value = Array("IT Function", "App Name", "Overall Compliance %", "Domains Count Used", "Source Rows")
-    wsOut.Rows(1).Font.Bold = True
-
-    '--- write results
-    Dim key As Variant, outRow As Long
-    Dim sumVal As Double, cntVal As Double, avgVal As Double, maxSeen As Double
-
+    'Write summary rows
+    Dim outRow As Long
+    Dim yCnt As Long, nCnt As Long, total As Long
     outRow = 2
-    For Each key In dict.Keys
-        arr = dict(key)
 
-        sumVal = arr(0)
-        cntVal = arr(1)
-        maxSeen = arr(4)
+    For Each key In dictY.Keys
+        yCnt = CLng(dictY(key))
+        nCnt = CLng(dictN(key))
+        total = yCnt + nCnt
 
-        If cntVal > 0 Then
-            avgVal = sumVal / cntVal
+        wsOut.Cells(outRow, 1).Value = key
+        wsOut.Cells(outRow, 2).Value = yCnt
+        wsOut.Cells(outRow, 3).Value = nCnt
+        wsOut.Cells(outRow, 4).Value = total
 
-            'If values look like 0-100 (instead of 0-1), convert to 0-1 for % formatting
-            If maxSeen > 1 Then avgVal = avgVal / 100#
+        If total > 0 Then
+            wsOut.Cells(outRow, 5).Value = yCnt / total
         Else
-            avgVal = 0
+            wsOut.Cells(outRow, 5).Value = 0
         End If
-
-        wsOut.Cells(outRow, "A").Value = arr(2)          'IT Function
-        wsOut.Cells(outRow, "B").Value = CStr(key)       'App Name
-        wsOut.Cells(outRow, "C").Value = avgVal          'Overall %
-        wsOut.Cells(outRow, "D").Value = cntVal          'Domains count used
-        wsOut.Cells(outRow, "E").Value = arr(3)          'Source rows
 
         outRow = outRow + 1
     Next key
 
-    '--- formatting
-    wsOut.Columns("C").NumberFormat = "0.00%"
-    wsOut.Columns("A:E").AutoFit
+    'Format
+    With wsOut
+        .Rows(1).Font.Bold = True
+        .Columns("A:E").AutoFit
+        .Columns("E").NumberFormat = "0.00%"
+    End With
 
-    MsgBox "Created 'App Compliance Summary' with compliance % per app.", vbInformation
+    MsgBox "Done! Created '" & OUT_SHEET & "' with compliance % per app.", vbInformation
 End Sub
