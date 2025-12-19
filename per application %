@@ -1,0 +1,165 @@
+Option Explicit
+
+Public Sub Build_Compliance_Summaries_SimpleCompliance()
+    Dim wsSrc As Worksheet
+    Dim wsOut1 As Worksheet, wsOut2 As Worksheet
+    Dim lastRow As Long, r As Long
+
+    '--- CONFIG
+    Const SRC_SHEET As String = "Simple Compliance"
+    Const OUT_APP_SUB As String = "App-SubDomain Compliance"
+    Const OUT_APP_ONLY As String = "App Compliance Summary"
+    Const FIRST_DATA_ROW As Long = 2
+
+    Const COL_APP As Long = 2          'B App Name
+    Const COL_SUBDOMAIN As Long = 5    'E Policy Sub-Domain
+    Const COL_COMPLIANCE As Long = 6   'F Compliance (Y/N)
+
+    Set wsSrc = ThisWorkbook.Worksheets(SRC_SHEET)
+
+    'Create/clear output sheets
+    Set wsOut1 = GetOrCreateSheet(OUT_APP_SUB, wsSrc)
+    wsOut1.Cells.Clear
+
+    Set wsOut2 = GetOrCreateSheet(OUT_APP_ONLY, wsSrc)
+    wsOut2.Cells.Clear
+
+    'Find last row based on App column
+    lastRow = wsSrc.Cells(wsSrc.Rows.Count, COL_APP).End(xlUp).Row
+    If lastRow < FIRST_DATA_ROW Then
+        MsgBox "No data found under App Name (Column B) in '" & SRC_SHEET & "'.", vbExclamation
+        Exit Sub
+    End If
+
+    'Dictionaries
+    Dim dictY_AppSub As Object, dictN_AppSub As Object
+    Dim dictY_App As Object, dictN_App As Object
+    Set dictY_AppSub = CreateObject("Scripting.Dictionary")
+    Set dictN_AppSub = CreateObject("Scripting.Dictionary")
+    Set dictY_App = CreateObject("Scripting.Dictionary")
+    Set dictN_App = CreateObject("Scripting.Dictionary")
+
+    'Loop rows
+    Dim appName As String, subDomain As String, v As String
+    Dim key As String
+
+    For r = FIRST_DATA_ROW To lastRow
+        appName = Trim$(CStr(wsSrc.Cells(r, COL_APP).Value))
+        subDomain = Trim$(CStr(wsSrc.Cells(r, COL_SUBDOMAIN).Value))
+        v = UCase$(Trim$(CStr(wsSrc.Cells(r, COL_COMPLIANCE).Value)))
+
+        If Len(appName) > 0 Then
+            '--- App only counts
+            If Not dictY_App.Exists(appName) Then
+                dictY_App(appName) = 0
+                dictN_App(appName) = 0
+            End If
+
+            If v = "Y" Then
+                dictY_App(appName) = CLng(dictY_App(appName)) + 1
+            ElseIf v = "N" Then
+                dictN_App(appName) = CLng(dictN_App(appName)) + 1
+            End If
+
+            '--- App + Subdomain counts (only if subdomain present)
+            If Len(subDomain) > 0 Then
+                key = appName & "||" & subDomain
+
+                If Not dictY_AppSub.Exists(key) Then
+                    dictY_AppSub(key) = 0
+                    dictN_AppSub(key) = 0
+                End If
+
+                If v = "Y" Then
+                    dictY_AppSub(key) = CLng(dictY_AppSub(key)) + 1
+                ElseIf v = "N" Then
+                    dictN_AppSub(key) = CLng(dictN_AppSub(key)) + 1
+                End If
+            End If
+        End If
+    Next r
+
+    '========================
+    ' Output 1: App + Subdomain
+    '========================
+    wsOut1.Range("A1").Value = "App Name"
+    wsOut1.Range("B1").Value = "Policy Sub-Domain"
+    wsOut1.Range("C1").Value = "Total Y"
+    wsOut1.Range("D1").Value = "Total N"
+    wsOut1.Range("E1").Value = "Total Answered (Y+N)"
+    wsOut1.Range("F1").Value = "Compliance % (Y/(Y+N))"
+
+    Dim outRow As Long, k As Variant, parts() As String
+    Dim yCnt As Long, nCnt As Long, total As Long
+    outRow = 2
+
+    For Each k In dictY_AppSub.Keys
+        parts = Split(CStr(k), "||")
+        yCnt = CLng(dictY_AppSub(k))
+        nCnt = CLng(dictN_AppSub(k))
+        total = yCnt + nCnt
+
+        wsOut1.Cells(outRow, 1).Value = parts(0)
+        wsOut1.Cells(outRow, 2).Value = parts(1)
+        wsOut1.Cells(outRow, 3).Value = yCnt
+        wsOut1.Cells(outRow, 4).Value = nCnt
+        wsOut1.Cells(outRow, 5).Value = total
+        wsOut1.Cells(outRow, 6).Value = IIf(total > 0, yCnt / total, 0)
+
+        outRow = outRow + 1
+    Next k
+
+    With wsOut1
+        .Rows(1).Font.Bold = True
+        .Columns("A:F").AutoFit
+        .Columns("F").NumberFormat = "0.00%"
+        .Range("A1:F" & outRow - 1).Sort Key1:=.Range("A1"), Order1:=xlAscending, _
+                                         Key2:=.Range("B1"), Order2:=xlAscending, Header:=xlYes
+    End With
+
+    '========================
+    ' Output 2: App only
+    '========================
+    wsOut2.Range("A1").Value = "App Name"
+    wsOut2.Range("B1").Value = "Total Y"
+    wsOut2.Range("C1").Value = "Total N"
+    wsOut2.Range("D1").Value = "Total Answered (Y+N)"
+    wsOut2.Range("E1").Value = "Compliance % (Y/(Y+N))"
+
+    outRow = 2
+    For Each k In dictY_App.Keys
+        yCnt = CLng(dictY_App(k))
+        nCnt = CLng(dictN_App(k))
+        total = yCnt + nCnt
+
+        wsOut2.Cells(outRow, 1).Value = CStr(k)
+        wsOut2.Cells(outRow, 2).Value = yCnt
+        wsOut2.Cells(outRow, 3).Value = nCnt
+        wsOut2.Cells(outRow, 4).Value = total
+        wsOut2.Cells(outRow, 5).Value = IIf(total > 0, yCnt / total, 0)
+
+        outRow = outRow + 1
+    Next k
+
+    With wsOut2
+        .Rows(1).Font.Bold = True
+        .Columns("A:E").AutoFit
+        .Columns("E").NumberFormat = "0.00%"
+        .Range("A1:E" & outRow - 1).Sort Key1:=.Range("A1"), Order1:=xlAscending, Header:=xlYes
+    End With
+
+    MsgBox "Done!" & vbCrLf & _
+           "1) " & OUT_APP_SUB & vbCrLf & _
+           "2) " & OUT_APP_ONLY, vbInformation
+End Sub
+
+Private Function GetOrCreateSheet(ByVal sheetName As String, ByVal afterSheet As Worksheet) As Worksheet
+    On Error Resume Next
+    Set GetOrCreateSheet = ThisWorkbook.Worksheets(sheetName)
+    On Error GoTo 0
+
+    If GetOrCreateSheet Is Nothing Then
+        Set GetOrCreateSheet = ThisWorkbook.Worksheets.Add(After:=afterSheet)
+        GetOrCreateSheet.Name = sheetName
+    End If
+End Function
