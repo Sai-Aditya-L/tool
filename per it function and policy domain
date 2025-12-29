@@ -1,0 +1,164 @@
+Option Explicit
+
+Public Sub Build_IT_PolicyDomain_Compliance_Summary()
+
+    Dim wsSrc As Worksheet, wsOut As Worksheet
+    Dim lastRow As Long, r As Long
+    Dim colIT As Long, colPolicy As Long, colCompliance As Long
+    Dim itFunc As String, policyDom As String, comp As String
+    Dim key As String
+
+    '--- source sheet name (change if yours is different)
+    Set wsSrc = ThisWorkbook.Worksheets("Simple Compliance")
+
+    '--- find required columns by header name (row 1)
+    colIT = FindColumn(wsSrc, "IT Function")
+    colCompliance = FindColumn(wsSrc, "Compliance")
+
+    'Policy Domain preferred; if not found, fall back to Policy Sub-Domain
+    colPolicy = FindColumn(wsSrc, "Policy Domain")
+    If colPolicy = 0 Then colPolicy = FindColumn(wsSrc, "Policy Sub-Domain")
+    If colPolicy = 0 Then
+        MsgBox "Could not find 'Policy Domain' or 'Policy Sub-Domain' column.", vbCritical
+        Exit Sub
+    End If
+
+    If colIT = 0 Or colCompliance = 0 Then
+        MsgBox "Could not find required columns. Need 'IT Function' and 'Compliance'.", vbCritical
+        Exit Sub
+    End If
+
+    lastRow = wsSrc.Cells(wsSrc.Rows.Count, colIT).End(xlUp).Row
+    If lastRow < 2 Then
+        MsgBox "No data rows found.", vbInformation
+        Exit Sub
+    End If
+
+    '--- create/clear output sheet
+    On Error Resume Next
+    Set wsOut = ThisWorkbook.Worksheets("IT-Policy Compliance Summary")
+    On Error GoTo 0
+
+    If wsOut Is Nothing Then
+        Set wsOut = ThisWorkbook.Worksheets.Add(After:=wsSrc)
+        wsOut.Name = "IT-Policy Compliance Summary"
+    Else
+        wsOut.Cells.Clear
+    End If
+
+    '--- dictionaries for counts (late binding = no reference needed)
+    Dim dictY As Object, dictN As Object
+    Set dictY = CreateObject("Scripting.Dictionary")
+    Set dictN = CreateObject("Scripting.Dictionary")
+
+    '--- scan rows and count Y/N by IT Function + Policy Domain
+    For r = 2 To lastRow
+        itFunc = Trim(CStr(wsSrc.Cells(r, colIT).Value))
+        policyDom = Trim(CStr(wsSrc.Cells(r, colPolicy).Value))
+        comp = UCase$(Trim(CStr(wsSrc.Cells(r, colCompliance).Value)))
+
+        If Len(itFunc) = 0 Or Len(policyDom) = 0 Then GoTo NextRow
+
+        'normalize compliance values
+        If comp = "YES" Then comp = "Y"
+        If comp = "NO" Then comp = "N"
+
+        If comp <> "Y" And comp <> "N" Then GoTo NextRow
+
+        key = itFunc & "||" & policyDom
+
+        If comp = "Y" Then
+            dictY(key) = NzLong(dictY, key) + 1
+        ElseIf comp = "N" Then
+            dictN(key) = NzLong(dictN, key) + 1
+        End If
+
+NextRow:
+    Next r
+
+    '--- write output headers
+    With wsOut
+        .Range("A1").Value = "IT Function"
+        .Range("B1").Value = "Policy Domain"
+        .Range("C1").Value = "Total Y"
+        .Range("D1").Value = "Total N"
+        .Range("E1").Value = "Total Answered (Y+N)"
+        .Range("F1").Value = "Compliance % (Y/(Y+N))"
+        .Rows(1).Font.Bold = True
+    End With
+
+    '--- union keys from both dicts
+    Dim dictAll As Object: Set dictAll = CreateObject("Scripting.Dictionary")
+    Dim k As Variant
+
+    For Each k In dictY.Keys
+        dictAll(k) = True
+    Next k
+    For Each k In dictN.Keys
+        dictAll(k) = True
+    Next k
+
+    '--- output rows
+    Dim outRow As Long: outRow = 2
+    Dim yCnt As Long, nCnt As Long, totalCnt As Long
+    Dim parts() As String
+
+    For Each k In dictAll.Keys
+        parts = Split(CStr(k), "||")
+        itFunc = parts(0)
+        policyDom = parts(1)
+
+        yCnt = NzLong(dictY, k)
+        nCnt = NzLong(dictN, k)
+        totalCnt = yCnt + nCnt
+
+        wsOut.Cells(outRow, 1).Value = itFunc
+        wsOut.Cells(outRow, 2).Value = policyDom
+        wsOut.Cells(outRow, 3).Value = yCnt
+        wsOut.Cells(outRow, 4).Value = nCnt
+        wsOut.Cells(outRow, 5).Value = totalCnt
+        If totalCnt > 0 Then
+            wsOut.Cells(outRow, 6).Value = yCnt / totalCnt
+        Else
+            wsOut.Cells(outRow, 6).Value = 0
+        End If
+
+        outRow = outRow + 1
+    Next k
+
+    '--- format
+    With wsOut
+        .Columns("A:F").EntireColumn.AutoFit
+        .Columns("F").NumberFormat = "0.00%"
+        .Range("A1:F1").AutoFilter
+    End With
+
+    MsgBox "Done! Created: 'IT-Policy Compliance Summary'", vbInformation
+
+End Sub
+
+'Find a column by header text in row 1 (case-insensitive)
+Private Function FindColumn(ws As Worksheet, headerName As String) As Long
+    Dim lastCol As Long, c As Long
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        If UCase$(Trim(CStr(ws.Cells(1, c).Value))) = UCase$(headerName) Then
+            FindColumn = c
+            Exit Function
+        End If
+    Next c
+
+    FindColumn = 0
+End Function
+
+'Return dictionary value as Long; if missing, return 0
+Private Function NzLong(dict As Object, ByVal key As Variant) As Long
+    If dict Is Nothing Then
+        NzLong = 0
+    ElseIf dict.Exists(key) Then
+        NzLong = CLng(dict(key))
+    Else
+        NzLong = 0
+    End If
+End Function
