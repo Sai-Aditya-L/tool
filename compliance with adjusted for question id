@@ -1,0 +1,391 @@
+Option Explicit
+
+Public Sub Build_CombinedMetrics_FromFolder_NoComments()
+
+    Const TARGET_SHEET As String = "OutputTemplate- Power BI Upload"
+
+    Dim metricHeaders As Variant
+    metricHeaders = Array( _
+        "Access Control", _
+        "Configuration Management", _
+        "Cryptographic Protection", _
+        "Network Security", _
+        "Non-Prod Environment Controls", _
+        "Protection of Systems and Communications", _
+        "Secure Authentication", _
+        "System Logging & Monitoring", _
+        "System Security Testing", _
+        "Vulnerability management & Scanning", _
+        "Disaster Recovery" _
+    )
+
+    Dim folderPath As String, fileName As String, fullPath As String
+    Dim wb As Workbook, ws As Worksheet
+    Dim outWs As Worksheet, logWs As Worksheet
+    Dim outRow As Long
+
+    Dim polSubCol As Long, qidCol As Long, lastRow As Long
+    Dim firstAppCol As Long, lastAppCol As Long, respCol As Long
+    Dim m As Long
+
+    Dim itFunc As String, appName As String, dataClass As String
+    Dim appId As String, daiId As String, numAsset As String
+
+    folderPath = PickFolder()
+    If Len(folderPath) = 0 Then Exit Sub
+    If Right(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
+
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.EnableEvents = False
+
+    Set outWs = GetOrCreateSheet(ThisWorkbook, "Combined Metrics")
+    Set logWs = GetOrCreateSheet(ThisWorkbook, "Log")
+
+    outWs.Cells.Clear
+    logWs.Cells.Clear
+
+    'Base headers (like your screenshot)
+    outWs.Cells(1, 1).Value = "IT Function"
+    outWs.Cells(1, 2).Value = "Application/Site Name"
+    outWs.Cells(1, 3).Value = "data class"
+    outWs.Cells(1, 4).Value = "Number of Asset"
+
+    'Metric headers (1 column per metric)
+    For m = LBound(metricHeaders) To UBound(metricHeaders)
+        outWs.Cells(1, 5 + m).Value = metricHeaders(m)
+    Next m
+
+    'Hidden helper cols
+    Dim hiddenStartCol As Long
+    hiddenStartCol = 5 + UBound(metricHeaders) + 1
+    outWs.Cells(1, hiddenStartCol).Value = "App ID"
+    outWs.Cells(1, hiddenStartCol + 1).Value = "DAI ID"
+    outWs.Cells(1, hiddenStartCol + 2).Value = "Source File"
+
+    outWs.Rows(1).Font.Bold = True
+    outWs.Columns.NumberFormat = "@"
+    outRow = 1
+
+    'Log header
+    logWs.Range("A1:C1").Value = Array("File", "Status", "Notes")
+    logWs.Rows(1).Font.Bold = True
+
+    fileName = Dir(folderPath & "*.xls*")
+    Do While Len(fileName) > 0
+
+        fullPath = folderPath & fileName
+
+        If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
+
+            On Error GoTo FileError
+            Set wb = Workbooks.Open(Filename:=fullPath, ReadOnly:=True, UpdateLinks:=False)
+
+            Set ws = Nothing
+            On Error Resume Next
+            Set ws = wb.Worksheets(TARGET_SHEET)
+            On Error GoTo 0
+
+            If ws Is Nothing Then
+                LogLine logWs, fileName, "Skipped", "Sheet not found: " & TARGET_SHEET
+                GoTo CloseAndNext
+            End If
+
+            'Policy Sub-Domain col is in A3:G3
+            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 7)
+            If polSubCol = 0 Then
+                LogLine logWs, fileName, "Skipped", "Could not find 'Policy Sub-Domain' in A3:G3."
+                GoTo CloseAndNext
+            End If
+
+            'Question ID col is in A3:G3 (needed for SA.010.033 special mapping)
+            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 7)
+            If qidCol = 0 Then
+                LogLine logWs, fileName, "Warning", "Could not find 'Question ID' in A3:G3. Special mapping for SA.010.033 will NOT apply."
+            End If
+
+            lastRow = ws.Cells(ws.Rows.Count, polSubCol).End(xlUp).Row
+            If lastRow < 7 Then
+                LogLine logWs, fileName, "Skipped", "No question rows found (expected start around row 7)."
+                GoTo CloseAndNext
+            End If
+
+            'App response columns start at H (col 8)
+            firstAppCol = 8
+            lastAppCol = ws.Cells(2, ws.Columns.Count).End(xlToLeft).Column
+            If lastAppCol < firstAppCol Then
+                LogLine logWs, fileName, "Skipped", "No application columns found to the right of H2."
+                GoTo CloseAndNext
+            End If
+
+            For respCol = firstAppCol To lastAppCol
+
+                appName = Trim$(ws.Cells(2, respCol).Text)
+                If Len(appName) = 0 Then GoTo NextApp 'skip non-app columns
+
+                itFunc = Trim$(ws.Cells(1, respCol).Text)
+
+                appId = Trim$(ws.Cells(4, respCol).Text)
+                dataClass = Trim$(ws.Cells(5, respCol).Text)
+                daiId = Trim$(ws.Cells(6, respCol).Text)
+
+                numAsset = GetValueForLabel(ws, "Number of Asset", respCol, 1, 20, 8)
+
+                outRow = outRow + 1
+                outWs.Cells(outRow, 1).Value = itFunc
+                outWs.Cells(outRow, 2).Value = appName
+                outWs.Cells(outRow, 3).Value = dataClass
+                outWs.Cells(outRow, 4).Value = numAsset
+
+                'Compute per metric (Y/N only)
+                For m = LBound(metricHeaders) To UBound(metricHeaders)
+                    outWs.Cells(outRow, 5 + m).Value = ComputeMetricYN_Mapped( _
+                        ws:=ws, rStart:=7, rEnd:=lastRow, polSubCol:=polSubCol, qidCol:=qidCol, respCol:=respCol, metricName:=CStr(metricHeaders(m)) _
+                    )
+                Next m
+
+                outWs.Cells(outRow, hiddenStartCol).Value = appId
+                outWs.Cells(outRow, hiddenStartCol + 1).Value = daiId
+                outWs.Cells(outRow, hiddenStartCol + 2).Value = fileName
+
+NextApp:
+            Next respCol
+
+            LogLine logWs, fileName, "OK", "Imported."
+
+CloseAndNext:
+            On Error Resume Next
+            wb.Close SaveChanges:=False
+            On Error GoTo 0
+            Set ws = Nothing
+            Set wb = Nothing
+        End If
+
+        fileName = Dir()
+        DoEvents
+    Loop
+
+    'Format Y/N columns
+    ApplyMetricsFormatting outWs, 1, outRow, 5, 5 + UBound(metricHeaders)
+
+    'Hide helper cols
+    outWs.Columns(hiddenStartCol).Hidden = True
+    outWs.Columns(hiddenStartCol + 1).Hidden = True
+    outWs.Columns(hiddenStartCol + 2).Hidden = True
+
+    outWs.Columns.AutoFit
+
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+
+    MsgBox "Done. Output is in 'Combined Metrics'.", vbInformation
+    Exit Sub
+
+FileError:
+    LogLine logWs, fileName, "Error", Err.Description
+    On Error Resume Next
+    If Not wb Is Nothing Then wb.Close SaveChanges:=False
+    On Error GoTo 0
+    Resume CloseAndNext
+
+End Sub
+
+'========================
+' Mapping rules (default):
+'   Yes/Y -> Y
+'   N/A -> Y
+'   N/R -> Y
+'   No/N -> N
+'   Not Answered -> N
+'
+' Special ONLY for Question ID SA.010.033:
+'   N or N/A or N/R => Y
+'   Y => N
+'   Not Answered => N   (unchanged)
+'
+' Metric result:
+'   any N => N
+'   else any Y => Y
+'   else blank
+'========================
+Private Function ComputeMetricYN_Mapped(ByVal ws As Worksheet, ByVal rStart As Long, ByVal rEnd As Long, _
+                                        ByVal polSubCol As Long, ByVal qidCol As Long, ByVal respCol As Long, ByVal metricName As String) As String
+    Dim r As Long
+    Dim keyMetric As String, keySub As String
+    Dim yn As String
+    Dim anyY As Boolean, anyN As Boolean
+    Dim qid As String
+
+    keyMetric = Canonical(metricName)
+    anyY = False: anyN = False
+
+    For r = rStart To rEnd
+        keySub = Canonical(ws.Cells(r, polSubCol).Text)
+        If keySub = keyMetric Then
+
+            If qidCol > 0 Then
+                qid = ws.Cells(r, qidCol).Text
+            Else
+                qid = ""
+            End If
+
+            yn = NormalizeToYN(ws.Cells(r, respCol).Text, qid)
+
+            If yn = "N" Then
+                anyN = True
+                Exit For
+            ElseIf yn = "Y" Then
+                anyY = True
+            End If
+        End If
+    Next r
+
+    If anyN Then
+        ComputeMetricYN_Mapped = "N"
+    ElseIf anyY Then
+        ComputeMetricYN_Mapped = "Y"
+    Else
+        ComputeMetricYN_Mapped = ""
+    End If
+End Function
+
+Private Function NormalizeToYN(ByVal raw As String, Optional ByVal questionId As String = "") As String
+    Dim s As String
+    Dim isSpecial As Boolean
+
+    'Canonical question id comparison (SA.010.033 -> "sa010033")
+    isSpecial = (Canonical(questionId) = "sa010033")
+
+    s = LCase$(Trim$(raw))
+    s = Replace(s, vbCr, "")
+    s = Replace(s, vbLf, "")
+    s = Replace(s, " ", "")
+
+    '---- Special rule ONLY for SA.010.033 ----
+    If isSpecial Then
+        'Flip: Y/Yes => N
+        If s = "yes" Or s = "y" Then NormalizeToYN = "N": Exit Function
+
+        'Treat N/No as Y
+        If s = "no" Or s = "n" Then NormalizeToYN = "Y": Exit Function
+
+        'N/A and N/R count as Y
+        If s = "na" Or s = "n/a" Then NormalizeToYN = "Y": Exit Function
+        If s = "nr" Or s = "n/r" Then NormalizeToYN = "Y": Exit Function
+
+        'Not Answered counts as N (unchanged)
+        If s = "notanswered" Or s = "notanswer" Then NormalizeToYN = "N": Exit Function
+
+        NormalizeToYN = ""
+        Exit Function
+    End If
+
+    '---- Default rules for ALL other question ids ----
+    If s = "yes" Or s = "y" Then NormalizeToYN = "Y": Exit Function
+    If s = "no" Or s = "n" Then NormalizeToYN = "N": Exit Function
+
+    'N/A and N/R count as Y
+    If s = "na" Or s = "n/a" Then NormalizeToYN = "Y": Exit Function
+    If s = "nr" Or s = "n/r" Then NormalizeToYN = "Y": Exit Function
+
+    'Not Answered counts as N
+    If s = "notanswered" Or s = "notanswer" Then NormalizeToYN = "N": Exit Function
+
+    NormalizeToYN = ""
+End Function
+
+Private Function FindHeaderInRow(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerText As String, _
+                                 ByVal startCol As Long, ByVal endCol As Long) As Long
+    Dim c As Long
+    For c = startCol To endCol
+        If Canonical(ws.Cells(headerRow, c).Text) = Canonical(headerText) Then
+            FindHeaderInRow = c
+            Exit Function
+        End If
+    Next c
+    FindHeaderInRow = 0
+End Function
+
+Private Function GetValueForLabel(ByVal ws As Worksheet, ByVal labelText As String, ByVal appCol As Long, _
+                                  ByVal rowStart As Long, ByVal rowEnd As Long, ByVal labelCol As Long) As String
+    Dim r As Long
+    For r = rowStart To rowEnd
+        If Canonical(ws.Cells(r, labelCol).Text) = Canonical(labelText) Then
+            GetValueForLabel = Trim$(ws.Cells(r, appCol).Text)
+            Exit Function
+        End If
+    Next r
+    GetValueForLabel = ""
+End Function
+
+Private Sub ApplyMetricsFormatting(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal lastDataRow As Long, _
+                                  ByVal metricsStartCol As Long, ByVal metricsEndCol As Long)
+    If lastDataRow < headerRow + 1 Then Exit Sub
+
+    With ws.Range(ws.Cells(headerRow, 1), ws.Cells(headerRow, metricsEndCol))
+        .Interior.Color = RGB(0, 51, 102)
+        .Font.Color = RGB(255, 255, 255)
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+    End With
+
+    With ws.Range(ws.Cells(headerRow, 1), ws.Cells(lastDataRow, metricsEndCol))
+        .Borders.LineStyle = xlContinuous
+        .Borders.Weight = xlThin
+    End With
+
+    Dim rng As Range
+    Set rng = ws.Range(ws.Cells(headerRow + 1, metricsStartCol), ws.Cells(lastDataRow, metricsEndCol))
+    rng.FormatConditions.Delete
+
+    With rng.FormatConditions.Add(Type:=xlCellValue, Operator:=xlEqual, Formula1:="=""Y""")
+        .Interior.Color = RGB(0, 176, 80)
+        .Font.Color = RGB(255, 255, 255)
+        .Font.Bold = True
+    End With
+
+    With rng.FormatConditions.Add(Type:=xlCellValue, Operator:=xlEqual, Formula1:="=""N""")
+        .Interior.Color = RGB(255, 255, 255)
+        .Font.Color = RGB(0, 0, 0)
+        .Font.Bold = True
+    End With
+
+    rng.HorizontalAlignment = xlCenter
+End Sub
+
+Private Function PickFolder() As String
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFolderPicker)
+    fd.Title = "Select folder containing Excel files"
+    If fd.Show = -1 Then PickFolder = fd.SelectedItems(1) Else PickFolder = ""
+End Function
+
+Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set GetOrCreateSheet = wb.Worksheets(sheetName)
+    On Error GoTo 0
+    If GetOrCreateSheet Is Nothing Then
+        Set GetOrCreateSheet = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        GetOrCreateSheet.Name = sheetName
+    End If
+End Function
+
+Private Sub LogLine(ByVal logWs As Worksheet, ByVal fileName As String, ByVal status As String, ByVal notes As String)
+    Dim lr As Long
+    lr = logWs.Cells(logWs.Rows.Count, "A").End(xlUp).Row + 1
+    logWs.Cells(lr, 1).Value = fileName
+    logWs.Cells(lr, 2).Value = status
+    logWs.Cells(lr, 3).Value = notes
+End Sub
+
+Private Function Canonical(ByVal s As String) As String
+    Dim i As Long, ch As String, out As String
+    s = LCase$(Trim$(s))
+    out = ""
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If (ch >= "a" And ch <= "z") Or (ch >= "0" And ch <= "9") Then out = out & ch
+    Next i
+    Canonical = out
+End Function
