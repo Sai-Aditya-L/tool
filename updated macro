@@ -1,0 +1,207 @@
+Option Explicit
+
+'==================== SETTINGS ==========================
+Private Const TEMPLATE_SHEET As String = "Administrative Information"
+Private Const URL_HEADER     As String = "URLs / IPs"
+Private Const SUMMARY_SHEET  As String = "URL_List"
+Private Const MAX_URL_ROW    As Long = 2500   ' last row to check under URLs / IPs
+'========================================================
+
+Public Sub Collect_URLs_From_All_Subfolders()
+
+    Dim fldr As FileDialog
+    Dim rootPath As String
+    Dim wsSummary As Worksheet
+    Dim nextRow As Long
+    
+    '----------------------------------------
+    ' Let user choose the top-level folder
+    '----------------------------------------
+    Set fldr = Application.FileDialog(msoFileDialogFolderPicker)
+    With fldr
+        .Title = "Select TOP-LEVEL folder that contains all subfolders"
+        If .Show <> -1 Then Exit Sub      ' User cancelled
+        rootPath = .SelectedItems(1)
+    End With
+    
+    If Right$(rootPath, 1) <> "\" Then rootPath = rootPath & "\"
+    
+    Application.ScreenUpdating = False
+    Application.EnableEvents = False
+    Application.DisplayAlerts = False
+    
+    '----------------------------------------
+    ' Create / clear summary sheet
+    '----------------------------------------
+    On Error Resume Next
+    Set wsSummary = ThisWorkbook.Worksheets(SUMMARY_SHEET)
+    On Error GoTo 0
+    
+    If wsSummary Is Nothing Then
+        Set wsSummary = ThisWorkbook.Worksheets.Add(After:=ThisWorkbook.Worksheets(ThisWorkbook.Worksheets.Count))
+        wsSummary.Name = SUMMARY_SHEET
+    End If
+    
+    wsSummary.Cells.Clear
+    
+    ' Headers for the output table
+    wsSummary.Range("A1").Value = "Source File"
+    wsSummary.Range("B1").Value = "Full Path"
+    wsSummary.Range("C1").Value = "URL / IP"
+    wsSummary.Range("D1").Value = "Asset Name"
+    wsSummary.Range("E1").Value = "IT Support Owner"
+    wsSummary.Range("F1").Value = "IDTS Sweep POC"
+    
+    nextRow = 2
+    
+    '----------------------------------------
+    ' Walk all folders & files recursively
+    '   (skips folders containing decom/decommission/duplicate)
+    '----------------------------------------
+    ProcessFolder rootPath, wsSummary, nextRow
+    
+    Application.ScreenUpdating = True
+    Application.EnableEvents = True
+    Application.DisplayAlerts = True
+    
+    MsgBox "Done! Collected " & (nextRow - 2) & _
+           " URL rows into sheet '" & wsSummary.Name & "'.", vbInformation
+
+End Sub
+
+'=================================================================
+' Recursively process one folder and all its subfolders
+'   - Skips folders whose name contains: decom, decommission, duplicate
+'=================================================================
+Private Sub ProcessFolder(ByVal folderPath As String, _
+                          ByRef wsSummary As Worksheet, _
+                          ByRef nextRow As Long)
+    
+    Dim fso As Object
+    Dim folder As Object
+    Dim subFolder As Object
+    Dim fileObj As Object
+    
+    Dim folderNameL As String
+    
+    On Error GoTo SafeExit
+    
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    Set folder = fso.GetFolder(folderPath)
+    
+    '------------- Skip unwanted folders ---------------------------
+    folderNameL = LCase$(folder.Name)
+    If (InStr(1, folderNameL, "decom", vbTextCompare) > 0) _
+       Or (InStr(1, folderNameL, "decommission", vbTextCompare) > 0) _
+       Or (InStr(1, folderNameL, "duplicate", vbTextCompare) > 0) Then
+        Exit Sub
+    End If
+    
+    '------------- Handle all files in this folder -----------------
+    For Each fileObj In folder.Files
+        
+        ' Skip this workbook and temp files like ~$
+        If LCase$(fileObj.Name) <> LCase$(ThisWorkbook.Name) _
+           And Left$(fileObj.Name, 2) <> "~$" Then
+            
+            ' Only process Excel extensions
+            If LCase$(fso.GetExtensionName(fileObj.Name)) Like "xls*" Then
+                ProcessFile CStr(fileObj.Path), wsSummary, nextRow
+            End If
+        End If
+    Next fileObj
+    
+    '------------- Recurse into subfolders -------------------------
+    For Each subFolder In folder.SubFolders
+        ProcessFolder CStr(subFolder.Path), wsSummary, nextRow
+    Next subFolder
+
+SafeExit:
+    ' If a folder can't be accessed (permissions, etc.), just skip it.
+    On Error GoTo 0
+End Sub
+
+'=================================================================
+' Open a single workbook, read URLs section (to row MAX_URL_ROW), write to summary
+'=================================================================
+Private Sub ProcessFile(ByVal fullPath As String, _
+                        ByRef wsSummary As Worksheet, _
+                        ByRef nextRow As Long)
+    
+    Dim fso As Object
+    Dim wb As Workbook
+    Dim ws As Worksheet
+    Dim rngHeader As Range
+    Dim fileNameOnly As String
+    Dim urlCol As Long
+    Dim startRow As Long
+    Dim r As Long
+    
+    Set fso = CreateObject("Scripting.FileSystemObject")
+    fileNameOnly = fso.GetFileName(fullPath)
+    
+    On Error GoTo CleanFail
+    Set wb = Workbooks.Open(Filename:=fullPath, ReadOnly:=True, UpdateLinks:=0)
+    On Error GoTo 0
+    
+    ' Try to get the template sheet
+    On Error Resume Next
+    Set ws = wb.Worksheets(TEMPLATE_SHEET)
+    On Error GoTo 0
+    
+    If Not ws Is Nothing Then
+        
+        ' Find the "URLs / IPs" header cell
+        Set rngHeader = ws.Cells.Find(What:=URL_HEADER, _
+                                      LookIn:=xlValues, _
+                                      LookAt:=xlWhole, _
+                                      SearchOrder:=xlByRows, _
+                                      SearchDirection:=xlNext, _
+                                      MatchCase:=False)
+        
+        If Not rngHeader Is Nothing Then
+            
+            urlCol = rngHeader.Column
+            startRow = rngHeader.Row + 1
+            
+            ' Make sure we don't start beyond MAX_URL_ROW
+            If startRow <= MAX_URL_ROW Then
+                
+                ' Check each row under the header up to MAX_URL_ROW
+                For r = startRow To MAX_URL_ROW
+                    
+                    If Trim$(CStr(ws.Cells(r, urlCol).Value)) <> "" Then
+                        wsSummary.Cells(nextRow, 1).Value = fileNameOnly                  ' Source File
+                        wsSummary.Cells(nextRow, 2).Value = fullPath                      ' Full Path
+                        wsSummary.Cells(nextRow, 3).Value = ws.Cells(r, urlCol).Value     ' URL / IP
+                        wsSummary.Cells(nextRow, 4).Value = ws.Cells(r, urlCol + 1).Value ' Asset Name
+                        wsSummary.Cells(nextRow, 5).Value = ws.Cells(r, urlCol + 2).Value ' IT Support Owner
+                        wsSummary.Cells(nextRow, 6).Value = ws.Cells(r, urlCol + 3).Value ' IDTS Sweep POC
+                        
+                        nextRow = nextRow + 1
+                    End If
+                    
+                Next r
+                
+            End If
+            
+        End If
+        
+    End If
+
+CleanExit:
+    On Error Resume Next
+    If Not wb Is Nothing Then wb.Close SaveChanges:=False
+    On Error GoTo 0
+    
+    Set rngHeader = Nothing
+    Set ws = Nothing
+    Set wb = Nothing
+    Set fso = Nothing
+    Exit Sub
+
+CleanFail:
+    ' Could not open/read file; skip it silently
+    Resume CleanExit
+
+End Sub
