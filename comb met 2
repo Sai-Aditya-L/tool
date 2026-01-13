@@ -1,28 +1,28 @@
 Option Explicit
 
-'=========================================================
-' Build Combined Metrics (NO COMMENTS output)
-' - Reads each Excel file in a folder
-' - Looks for sheet: "OutputTemplate- Power BI Upload"
-' - Builds "Combined Metrics" sheet with 1 row per App column
-' - 1 column per Policy Sub-Domain metric (Y/N)
-' - Ignores any APP COLUMN where row 3 contains "Comments"
-' - Default mapping:
-'       Yes/Y -> Y
-'       N/A   -> Y
-'       N/R   -> Y
-'       No/N  -> N
-'       Not Answered -> N
-'   Special flip questions:
-'       SA.010.033, SA.010.028 : Y <-> N (NA/NR stay Y; Not Answered stays N)
-' - Metric rule:
-'       If ANY mapped N exists within that metric's rows => N
-'       Else if ANY mapped Y exists => Y
-'       Else blank
-'=========================================================
+'===========================================================
+' Build "Combined Metrics" from a folder of OutputTemplate files
+' - Ignores any APP column whose Row 3 header contains "Comments"
+' - Default mapping:   Y/Yes + N/A + N/R => Y ;  N/No + Not Answered => N
+' - Special flip QIDs: SA.010.033 and SA.010.028
+'       Yes/Y => N
+'       No/N  => Y
+'       N/A, N/R stay => Y
+'       Not Answered  => N
+'
+' Metric result per app:
+'   If ANY N exists in that policy sub-domain rows => N
+'   Else if ANY Y exists => Y
+'   Else blank
+'
+' DEBUG MODE:
+'   If a metric becomes N, logs the first triggering Question ID + details
+'   to sheet "Debug_N_Triggers".
+'===========================================================
 Public Sub Build_CombinedMetrics_FromFolder_NoComments()
 
     Const TARGET_SHEET As String = "OutputTemplate- Power BI Upload"
+    Const DEBUG_MODE As Boolean = True
 
     Dim metricHeaders As Variant
     metricHeaders = Array( _
@@ -41,7 +41,7 @@ Public Sub Build_CombinedMetrics_FromFolder_NoComments()
 
     Dim folderPath As String, fileName As String, fullPath As String
     Dim wb As Workbook, ws As Worksheet
-    Dim outWs As Worksheet, logWs As Worksheet
+    Dim outWs As Worksheet, logWs As Worksheet, dbgWs As Worksheet
     Dim outRow As Long
 
     Dim polSubCol As Long, qidCol As Long, lastRow As Long
@@ -53,7 +53,7 @@ Public Sub Build_CombinedMetrics_FromFolder_NoComments()
 
     folderPath = PickFolder()
     If Len(folderPath) = 0 Then Exit Sub
-    If Right$(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
+    If Right(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
 
     Application.ScreenUpdating = False
     Application.DisplayAlerts = False
@@ -64,6 +64,16 @@ Public Sub Build_CombinedMetrics_FromFolder_NoComments()
 
     outWs.Cells.Clear
     logWs.Cells.Clear
+
+    If DEBUG_MODE Then
+        Set dbgWs = GetOrCreateSheet(ThisWorkbook, "Debug_N_Triggers")
+        dbgWs.Cells.Clear
+        dbgWs.Range("A1:I1").Value = Array( _
+            "Source File", "IT Function", "App Name", "Metric (Policy Sub-Domain)", _
+            "Trigger Question ID", "Raw Response", "Normalized", "Sheet Row", "Notes" _
+        )
+        dbgWs.Rows(1).Font.Bold = True
+    End If
 
     'Base headers
     outWs.Cells(1, 1).Value = "IT Function"
@@ -111,18 +121,18 @@ Public Sub Build_CombinedMetrics_FromFolder_NoComments()
                 GoTo CloseAndNext
             End If
 
-            'Policy Sub-Domain col is in A3:G3
+            'Policy Sub-Domain col in A3:G3
             polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 7)
             If polSubCol = 0 Then
                 LogLine logWs, fileName, "Skipped", "Could not find 'Policy Sub-Domain' in A3:G3."
                 GoTo CloseAndNext
             End If
 
-            'Question ID col is in A3:G3 (needed for flip rules)
+            'Question ID col in A3:G3 (for flip rules)
             qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 7)
             If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 7)
             If qidCol = 0 Then
-                LogLine logWs, fileName, "Warning", "Could not find 'Question ID' in A3:G3. Special flip rules will NOT apply."
+                LogLine logWs, fileName, "Warning", "Could not find 'Question ID' in A3:G3. Flip rules will NOT apply."
             End If
 
             lastRow = ws.Cells(ws.Rows.Count, polSubCol).End(xlUp).Row
@@ -141,20 +151,16 @@ Public Sub Build_CombinedMetrics_FromFolder_NoComments()
 
             For respCol = firstAppCol To lastAppCol
 
-                'IGNORE any column that is a Comments column (Row 3 contains "Comments")
-                If InStr(1, LCase$(CStr(ws.Cells(3, respCol).Text)), "comments", vbTextCompare) > 0 Then
-                    GoTo NextApp
-                End If
+                'Ignore any COMMENTS column (Row 3 header contains "Comments")
+                If ColumnIsComments(ws, respCol) Then GoTo NextApp
 
                 appName = Trim$(ws.Cells(2, respCol).Text)
                 If Len(appName) = 0 Then GoTo NextApp 'skip non-app columns
 
                 itFunc = Trim$(ws.Cells(1, respCol).Text)
-
                 appId = Trim$(ws.Cells(4, respCol).Text)
                 dataClass = Trim$(ws.Cells(5, respCol).Text)
                 daiId = Trim$(ws.Cells(6, respCol).Text)
-
                 numAsset = GetValueForLabel(ws, "Number of Asset", respCol, 1, 20, 8)
 
                 outRow = outRow + 1
@@ -165,9 +171,25 @@ Public Sub Build_CombinedMetrics_FromFolder_NoComments()
 
                 'Compute per metric (Y/N only)
                 For m = LBound(metricHeaders) To UBound(metricHeaders)
-                    outWs.Cells(outRow, 5 + m).Value = ComputeMetricYN_FlipQIDs( _
-                        ws:=ws, rStart:=7, rEnd:=lastRow, polSubCol:=polSubCol, qidCol:=qidCol, respCol:=respCol, metricName:=CStr(metricHeaders(m)) _
+
+                    Dim triggerQid As String, triggerRaw As String, triggerNorm As String
+                    Dim triggerRow As Long, metricYN As String
+
+                    metricYN = ComputeMetricYN_FlipQIDs_Debug( _
+                        ws:=ws, rStart:=7, rEnd:=lastRow, polSubCol:=polSubCol, qidCol:=qidCol, respCol:=respCol, _
+                        metricName:=CStr(metricHeaders(m)), _
+                        outTriggerQid:=triggerQid, outTriggerRaw:=triggerRaw, outTriggerNorm:=triggerNorm, outTriggerRow:=triggerRow _
                     )
+
+                    outWs.Cells(outRow, 5 + m).Value = metricYN
+
+                    'If metric is N, log the trigger details
+                    If DEBUG_MODE Then
+                        If metricYN = "N" Then
+                            LogDebugTrigger dbgWs, fileName, itFunc, appName, CStr(metricHeaders(m)), triggerQid, triggerRaw, triggerNorm, triggerRow
+                        End If
+                    End If
+
                 Next m
 
                 outWs.Cells(outRow, hiddenStartCol).Value = appId
@@ -200,12 +222,13 @@ CloseAndNext:
     outWs.Columns(hiddenStartCol + 2).Hidden = True
 
     outWs.Columns.AutoFit
+    If DEBUG_MODE Then dbgWs.Columns.AutoFit
 
     Application.ScreenUpdating = True
     Application.DisplayAlerts = True
     Application.EnableEvents = True
 
-    MsgBox "Done. Output is in 'Combined Metrics'.", vbInformation
+    MsgBox "Done. Output is in 'Combined Metrics'." & IIf(DEBUG_MODE, vbCrLf & "Debug log: 'Debug_N_Triggers'.", ""), vbInformation
     Exit Sub
 
 FileError:
@@ -218,18 +241,33 @@ FileError:
 End Sub
 
 '========================
+' Decide if a column is a Comments column based on Row 3 header
+'========================
+Private Function ColumnIsComments(ByVal ws As Worksheet, ByVal col As Long) As Boolean
+    Dim hdr As String
+    hdr = Canonical(ws.Cells(3, col).Text)
+    ColumnIsComments = (InStr(1, hdr, "comments", vbTextCompare) > 0)
+End Function
+
+'========================
 ' Metric result:
-'   any N => N
+'   any N => N   (and return the first triggering row details)
 '   else any Y => Y
 '   else blank
 '========================
-Private Function ComputeMetricYN_FlipQIDs(ByVal ws As Worksheet, ByVal rStart As Long, ByVal rEnd As Long, _
-                                         ByVal polSubCol As Long, ByVal qidCol As Long, ByVal respCol As Long, ByVal metricName As String) As String
+Private Function ComputeMetricYN_FlipQIDs_Debug(ByVal ws As Worksheet, ByVal rStart As Long, ByVal rEnd As Long, _
+                                               ByVal polSubCol As Long, ByVal qidCol As Long, ByVal respCol As Long, _
+                                               ByVal metricName As String, _
+                                               ByRef outTriggerQid As String, ByRef outTriggerRaw As String, _
+                                               ByRef outTriggerNorm As String, ByRef outTriggerRow As Long) As String
     Dim r As Long
     Dim keyMetric As String, keySub As String
     Dim yn As String
     Dim anyY As Boolean, anyN As Boolean
     Dim qid As String
+    Dim raw As String
+
+    outTriggerQid = "": outTriggerRaw = "": outTriggerNorm = "": outTriggerRow = 0
 
     keyMetric = Canonical(metricName)
     anyY = False: anyN = False
@@ -238,16 +276,17 @@ Private Function ComputeMetricYN_FlipQIDs(ByVal ws As Worksheet, ByVal rStart As
         keySub = Canonical(ws.Cells(r, polSubCol).Text)
         If keySub = keyMetric Then
 
-            If qidCol > 0 Then
-                qid = Trim$(CStr(ws.Cells(r, qidCol).Text))
-            Else
-                qid = ""
-            End If
+            If qidCol > 0 Then qid = Trim$(CStr(ws.Cells(r, qidCol).Text)) Else qid = ""
+            raw = CStr(ws.Cells(r, respCol).Text)
 
-            yn = NormalizeToYN_WithFlip(ws.Cells(r, respCol).Text, qid)
+            yn = NormalizeToYN_WithFlip(raw, qid)
 
             If yn = "N" Then
                 anyN = True
+                outTriggerQid = qid
+                outTriggerRaw = Trim$(raw)
+                outTriggerNorm = "N"
+                outTriggerRow = r
                 Exit For
             ElseIf yn = "Y" Then
                 anyY = True
@@ -256,97 +295,75 @@ Private Function ComputeMetricYN_FlipQIDs(ByVal ws As Worksheet, ByVal rStart As
     Next r
 
     If anyN Then
-        ComputeMetricYN_FlipQIDs = "N"
+        ComputeMetricYN_FlipQIDs_Debug = "N"
     ElseIf anyY Then
-        ComputeMetricYN_FlipQIDs = "Y"
+        ComputeMetricYN_FlipQIDs_Debug = "Y"
     Else
-        ComputeMetricYN_FlipQIDs = ""
+        ComputeMetricYN_FlipQIDs_Debug = ""
     End If
 End Function
 
 '========================
-' Normalize per your rules + robust parsing
-' Default:
-'   Yes/Y -> Y
-'   No/N -> N
-'   N/A -> Y
-'   N/R -> Y
-'   Not Answered -> N
-'
-' Special flip ONLY for SA.010.033 and SA.010.028:
-'   Yes/Y -> N
-'   No/N  -> Y
-'   N/A, N/R stay Y
-'   Not Answered stays N
+' Robust normalization:
+'  - Canonical(raw) makes N/A, N-A, NR, N/R all consistent
 '========================
 Private Function NormalizeToYN_WithFlip(ByVal raw As String, Optional ByVal questionId As String = "") As String
-    Dim s As String, q As String
+    Dim respCanon As String
+    Dim q As String
     Dim isFlip As Boolean
 
     q = Canonical(questionId)
     isFlip = (q = "sa010033" Or q = "sa010028")
 
-    'Normalize whitespace + hidden characters
-    s = LCase$(CStr(raw))
-    s = Replace(s, ChrW(160), "")   'non-breaking space
-    s = Replace(s, vbTab, "")
-    s = Replace(s, vbCr, "")
-    s = Replace(s, vbLf, "")
-    s = Trim$(s)
-    s = Replace(s, " ", "")
-
-    'Blank/unknown stays blank (does not force N)
-    If Len(s) = 0 Then
-        NormalizeToYN_WithFlip = ""
+    If Len(Trim$(CStr(raw))) = 0 Then
+        NormalizeToYN_WithFlip = ""      'blank stays blank
         Exit Function
     End If
 
-    'Not Answered -> N (always)
-    If s = "notanswered" Or s = "notanswer" Or s = "notanswered." Then
-        NormalizeToYN_WithFlip = "N"
-        Exit Function
+    respCanon = Canonical(raw)
+
+    If respCanon = "notanswered" Or respCanon = "notanswer" Then
+        NormalizeToYN_WithFlip = "N": Exit Function
     End If
 
-    'NA variants -> Y (always)
-    If s = "na" Or s = "n/a" Or s = "n-a" Or s = "n.a" Or s = "n.a." Or s = "n\a" Then
-        NormalizeToYN_WithFlip = "Y"
-        Exit Function
+    If respCanon = "na" Then
+        NormalizeToYN_WithFlip = "Y": Exit Function
+    End If
+    If respCanon = "nr" Then
+        NormalizeToYN_WithFlip = "Y": Exit Function
     End If
 
-    'NR variants -> Y (always)
-    If s = "nr" Or s = "n/r" Or s = "n-r" Or s = "n.r" Or s = "n.r." Then
-        NormalizeToYN_WithFlip = "Y"
-        Exit Function
-    End If
-
-    'Handle Y+, Y-, etc. / N+, N- etc. by first character
-    If Left$(s, 1) = "y" Then
+    If respCanon = "yes" Or respCanon = "y" Then
         NormalizeToYN_WithFlip = IIf(isFlip, "N", "Y")
         Exit Function
     End If
 
-    If Left$(s, 1) = "n" Then
-        'NA/NR already handled above
-        NormalizeToYN_WithFlip = IIf(isFlip, "Y", "N")
-        Exit Function
-    End If
-
-    'Fallback via canonical (keeps only a-z0-9)
-    Dim c As String
-    c = Canonical(s)
-
-    If c = "yes" Or c = "y" Then
-        NormalizeToYN_WithFlip = IIf(isFlip, "N", "Y")
-        Exit Function
-    End If
-
-    If c = "no" Or c = "n" Then
+    If respCanon = "no" Or respCanon = "n" Then
         NormalizeToYN_WithFlip = IIf(isFlip, "Y", "N")
         Exit Function
     End If
 
     NormalizeToYN_WithFlip = "" 'unknown
 End Function
+
+'========================
+' Debug logger
+'========================
+Private Sub LogDebugTrigger(ByVal dbgWs As Worksheet, ByVal sourceFile As String, ByVal itFunc As String, _
+                           ByVal appName As String, ByVal metricName As String, ByVal triggerQid As String, _
+                           ByVal rawResp As String, ByVal norm As String, ByVal sheetRow As Long)
+    Dim lr As Long
+    lr = dbgWs.Cells(dbgWs.Rows.Count, "A").End(xlUp).Row + 1
+    dbgWs.Cells(lr, 1).Value = sourceFile
+    dbgWs.Cells(lr, 2).Value = itFunc
+    dbgWs.Cells(lr, 3).Value = appName
+    dbgWs.Cells(lr, 4).Value = metricName
+    dbgWs.Cells(lr, 5).Value = triggerQid
+    dbgWs.Cells(lr, 6).Value = rawResp
+    dbgWs.Cells(lr, 7).Value = norm
+    dbgWs.Cells(lr, 8).Value = sheetRow
+    dbgWs.Cells(lr, 9).Value = IIf(Len(triggerQid) = 0, "Question ID not found (qidCol missing?)", "")
+End Sub
 
 Private Function FindHeaderInRow(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerText As String, _
                                  ByVal startCol As Long, ByVal endCol As Long) As Long
@@ -432,6 +449,7 @@ Private Sub LogLine(ByVal logWs As Worksheet, ByVal fileName As String, ByVal st
     logWs.Cells(lr, 3).Value = notes
 End Sub
 
+'Canonical: keep only letters+digits, lowercase
 Private Function Canonical(ByVal s As String) As String
     Dim i As Long, ch As String, out As String
     s = LCase$(Trim$(CStr(s)))
