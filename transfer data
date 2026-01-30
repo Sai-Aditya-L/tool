@@ -1,0 +1,169 @@
+Option Explicit
+
+Public Sub Build_RemediationTasks_From_Sweep2()
+    Dim srcPath As Variant, dstPath As Variant
+    Dim wbS As Workbook, wbD As Workbook
+    Dim wsS As Worksheet, wsD As Worksheet
+    
+    Dim srcHdrRow As Long, dstHdrRow As Long
+    Dim colNumber As Long, colName As Long, colEntity As Long
+    Dim colIssueId As Long, colTaskName As Long
+    
+    Dim lastRowS As Long, r As Long
+    Dim outRow As Long
+    
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    
+    'Pick source file
+    srcPath = Application.GetOpenFilename("Excel Files (*.xlsx;*.xlsm), *.xlsx;*.xlsm", , _
+                                         "Select Sweep 2 Consolidated Issue List file")
+    If srcPath = False Then GoTo CleanExit
+    
+    'Pick destination file
+    dstPath = Application.GetOpenFilename("Excel Files (*.xlsx;*.xlsm), *.xlsx;*.xlsm", , _
+                                         "Select Remediation Task file")
+    If dstPath = False Then GoTo CleanExit
+    
+    Set wbS = Workbooks.Open(CStr(srcPath))
+    Set wbD = Workbooks.Open(CStr(dstPath))
+    
+    Set wsS = wbS.Worksheets(1) 'change if needed
+    Set wsD = wbD.Worksheets(1) 'change if needed
+    
+    'Find headers in source
+    srcHdrRow = FindHeaderRow(wsS, Array("Number", "Name", "Entity"), 20)
+    If srcHdrRow = 0 Then
+        MsgBox "Could not find source headers: Number, Name, Entity", vbCritical
+        GoTo CleanExit
+    End If
+    
+    colNumber = FindHeaderColumn(wsS, srcHdrRow, "Number")
+    colName = FindHeaderColumn(wsS, srcHdrRow, "Name")
+    colEntity = FindHeaderColumn(wsS, srcHdrRow, "Entity")
+    
+    'Find headers in destination
+    dstHdrRow = FindHeaderRow(wsD, Array("Issue Id", "Remediation Task Name"), 20)
+    If dstHdrRow = 0 Then
+        MsgBox "Could not find destination headers: Issue Id, Remediation Task Name", vbCritical
+        GoTo CleanExit
+    End If
+    
+    colIssueId = FindHeaderColumn(wsD, dstHdrRow, "Issue Id")
+    colTaskName = FindHeaderColumn(wsD, dstHdrRow, "Remediation Task Name")
+    
+    'Last source row (based on Number column)
+    lastRowS = wsS.Cells(wsS.Rows.Count, colNumber).End(xlUp).Row
+    
+    'First empty destination row under headers
+    outRow = wsD.Cells(wsD.Rows.Count, colIssueId).End(xlUp).Row + 1
+    If outRow <= dstHdrRow Then outRow = dstHdrRow + 1
+    
+    'Loop source rows
+    For r = srcHdrRow + 1 To lastRowS
+        Dim issueId As String, nm As String, entText As String
+        
+        issueId = Trim(CStr(wsS.Cells(r, colNumber).Value))
+        nm = Trim(CStr(wsS.Cells(r, colName).Value))
+        entText = CStr(wsS.Cells(r, colEntity).Value)
+        
+        If Len(issueId) = 0 And Len(nm) = 0 And Len(entText) = 0 Then
+            'skip empty-ish row
+        Else
+            Dim entities() As String
+            entities = SplitEntities(entText) 'one row per entity (line breaks etc.)
+            
+            Dim i As Long
+            If UBound(entities) >= 0 Then
+                For i = LBound(entities) To UBound(entities)
+                    Dim ent As String
+                    ent = CleanEntity(entities(i))
+                    If Len(ent) > 0 Then
+                        wsD.Cells(outRow, colIssueId).Value = issueId
+                        wsD.Cells(outRow, colTaskName).Value = nm & " (" & ent & ")"
+                        outRow = outRow + 1
+                    End If
+                Next i
+            End If
+            
+            'If entity cell was blank or produced no valid entities, still write one row
+            If (Len(Trim(entText)) = 0) Or (CountNonBlank(entities) = 0) Then
+                wsD.Cells(outRow, colIssueId).Value = issueId
+                wsD.Cells(outRow, colTaskName).Value = nm
+                outRow = outRow + 1
+            End If
+        End If
+    Next r
+    
+    MsgBox "Done! Created remediation task rows through row " & (outRow - 1) & ".", vbInformation
+
+CleanExit:
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+End Sub
+
+'--- Helpers ---
+
+Private Function FindHeaderRow(ws As Worksheet, headers As Variant, maxRowsToScan As Long) As Long
+    Dim r As Long, c As Long, lastCol As Long, i As Long
+    For r = 1 To maxRowsToScan
+        lastCol = ws.Cells(r, ws.Columns.Count).End(xlToLeft).Column
+        For i = LBound(headers) To UBound(headers)
+            If FindHeaderColumn(ws, r, CStr(headers(i))) = 0 Then GoTo NextRow
+        Next i
+        FindHeaderRow = r
+        Exit Function
+NextRow:
+    Next r
+    FindHeaderRow = 0
+End Function
+
+Private Function FindHeaderColumn(ws As Worksheet, headerRow As Long, headerText As String) As Long
+    Dim lastCol As Long, c As Long, val As String
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastCol
+        val = Trim(CStr(ws.Cells(headerRow, c).Value))
+        If StrComp(val, headerText, vbTextCompare) = 0 Then
+            FindHeaderColumn = c
+            Exit Function
+        End If
+    Next c
+    FindHeaderColumn = 0
+End Function
+
+'Split entities primarily by line breaks. (This matches your screenshot where each entity appears on new lines.)
+Private Function SplitEntities(entText As String) As String()
+    Dim t As String
+    t = CStr(entText)
+    
+    'Normalize line breaks to vbLf
+    t = Replace(t, vbCrLf, vbLf)
+    t = Replace(t, vbCr, vbLf)
+    
+    If Len(Trim(t)) = 0 Then
+        SplitEntities = Split("", vbLf) 'returns array with one empty element
+        Exit Function
+    End If
+    
+    SplitEntities = Split(t, vbLf)
+End Function
+
+Private Function CleanEntity(s As String) As String
+    Dim t As String
+    t = Trim(s)
+    'Remove trailing commas/periods that often show up in pasted lists
+    Do While Len(t) > 0 And (Right$(t, 1) = "," Or Right$(t, 1) = "." Or Right$(t, 1) = ";")
+        t = Trim(Left$(t, Len(t) - 1))
+    Loop
+    CleanEntity = t
+End Function
+
+Private Function CountNonBlank(arr As Variant) As Long
+    On Error GoTo SafeExit
+    Dim i As Long, n As Long
+    For i = LBound(arr) To UBound(arr)
+        If Len(Trim(CStr(arr(i)))) > 0 Then n = n + 1
+    Next i
+    CountNonBlank = n
+SafeExit:
+End Function
