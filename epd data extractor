@@ -16,12 +16,11 @@ Public Sub Populate_And_Append_RemediationTasks_From_IssueReports_WithLog()
     If dstPath = False Then GoTo CleanExit
 
     Set wbD = Workbooks.Open(CStr(dstPath))
-    Set wsD = wbD.Worksheets(1) 'change if your remediation task sheet isn't the first
+    Set wsD = wbD.Worksheets(1) 'change if needed
 
     'Create/clear log sheet
     Set wsLog = GetOrCreateLogSheet(wbD, "Run Log")
     InitLog wsLog
-
     LogEvent wsLog, "INFO", "", "", "", "", "Started run."
 
     'Pick folder with Issue Report files
@@ -30,7 +29,6 @@ Public Sub Populate_And_Append_RemediationTasks_From_IssueReports_WithLog()
         LogEvent wsLog, "WARN", "", "", "", "", "No folder selected. Exiting."
         GoTo CleanExit
     End If
-
     LogEvent wsLog, "INFO", "", "", "", "", "Issue Report folder: " & folderPath
 
     'Find destination headers
@@ -47,7 +45,6 @@ Public Sub Populate_And_Append_RemediationTasks_From_IssueReports_WithLog()
     colAssigned = FindHeaderColumn(wsD, hdrRowD, "Assigned to")
     colDue = FindHeaderColumn(wsD, hdrRowD, "Due Date")
 
-    'Format to avoid Excel "help"
     wsD.Columns(colTaskName).NumberFormat = "@"
     wsD.Columns(colDesc).NumberFormat = "@"
     wsD.Columns(colAssigned).NumberFormat = "@"
@@ -55,21 +52,23 @@ Public Sub Populate_And_Append_RemediationTasks_From_IssueReports_WithLog()
 
     LogEvent wsLog, "INFO", "", "", "", "", "Detected destination headers on row " & hdrRowD & "."
 
-    'Map entity -> file path
+    'Map entity -> file path from folder
     Dim entityToFile As Object
     Set entityToFile = BuildEntityFileMap(folderPath)
-
     If entityToFile.Count = 0 Then
         LogEvent wsLog, "ERROR", "", "", "", "", "No files found matching: Issue Report - *.xls*"
         MsgBox "No Issue Report files found in the selected folder.", vbCritical
         GoTo CleanExit
     End If
-
     LogEvent wsLog, "INFO", "", "", "", "", "Found " & entityToFile.Count & " Issue Report file(s)."
 
-    'Build existing set: (entity + policySubDomain) -> row number
+    'Existing row index: (entity + policySubDomain) -> row number
     Dim existing As Object
     Set existing = CreateObject("Scripting.Dictionary")
+
+    'Prefix per entity: entityKey -> prefix (e.g. "Russia Sweep 2 - ")
+    Dim entityPrefix As Object
+    Set entityPrefix = CreateObject("Scripting.Dictionary")
 
     Dim globalPrefix As String
     globalPrefix = ""
@@ -77,6 +76,7 @@ Public Sub Populate_And_Append_RemediationTasks_From_IssueReports_WithLog()
     Dim lastRowD As Long, r As Long
     lastRowD = wsD.Cells(wsD.Rows.Count, colTaskName).End(xlUp).Row
 
+    'Scan remediation task sheet to build existing map + prefixes
     For r = hdrRowD + 1 To lastRowD
         Dim t As String, ent As String, polSub As String, pref As String
         t = Trim(CStr(wsD.Cells(r, colTaskName).Value))
@@ -86,7 +86,17 @@ Public Sub Populate_And_Append_RemediationTasks_From_IssueReports_WithLog()
         polSub = ExtractPolicySubDomainFromTaskName(t)
         pref = ExtractPrefixUpToSweep2Dash(t)
 
-        If Len(globalPrefix) = 0 And Len(pref) > 0 Then globalPrefix = pref
+        If Len(pref) > 0 And IsGoodPrefix(pref) Then
+            If Len(globalPrefix) = 0 Then globalPrefix = pref
+
+            If Len(ent) > 0 Then
+                Dim eKey As String
+                eKey = NormalizeKey(ent)
+                If Not entityPrefix.Exists(eKey) Then
+                    entityPrefix.Add eKey, pref
+                End If
+            End If
+        End If
 
         If Len(ent) > 0 And Len(polSub) > 0 Then
             Dim k As String
@@ -98,9 +108,10 @@ NextR1:
     Next r
 
     If Len(globalPrefix) = 0 Then globalPrefix = "Sweep 2 - "
-    LogEvent wsLog, "INFO", "", "", "", "", "Using prefix for new rows: [" & globalPrefix & "]"
+    LogEvent wsLog, "INFO", "", "", "", "", "Global prefix fallback: [" & globalPrefix & "]"
+    LogEvent wsLog, "INFO", "", "", "", "", "Entity prefixes learned: " & entityPrefix.Count
 
-    'Cache lookups per entity
+    'Cache lookups per entity file
     Dim lookupCache As Object
     Set lookupCache = CreateObject("Scripting.Dictionary")
 
@@ -109,7 +120,6 @@ NextR1:
 
         Dim srcFile As String
         srcFile = entityToFile(entKey)
-
         LogEvent wsLog, "INFO", DenormalizeForLog(entKey), "", "", "", "Opening Issue Report: " & srcFile
 
         Dim polLookup As Object
@@ -125,11 +135,19 @@ NextR1:
             GoTo NextEntity
         End If
 
+        'Pick prefix for this entity (best: learned from existing rows; else global)
+        Dim usePrefix As String
+        If entityPrefix.Exists(entKey) Then
+            usePrefix = CStr(entityPrefix(entKey))
+        Else
+            usePrefix = globalPrefix
+        End If
+
         Dim polKey As Variant
         For Each polKey In polLookup.Keys
 
             Dim rec As Variant
-            rec = polLookup(polKey) '0 plan, 1 owner, 2 date, 3 original policy subdomain, 4 entity display
+            rec = polLookup(polKey) '0 plan, 1 owner, 2 date, 3 policy subdomain text, 4 entity display
 
             Dim key2 As String
             key2 = entKey & "||" & polKey
@@ -149,8 +167,9 @@ NextR1:
                 End If
 
                 LogEvent wsLog, "UPDATED", CStr(rec(4)), CStr(rec(3)), rowNum, "", "Updated existing row."
+
             Else
-                'Append new row
+                'Append new row with correct format
                 Dim outRow As Long
                 outRow = wsD.Cells(wsD.Rows.Count, colTaskName).End(xlUp).Row + 1
                 If outRow <= hdrRowD Then outRow = hdrRowD + 1
@@ -161,7 +180,8 @@ NextR1:
                 Dim entityDisplay As String
                 entityDisplay = CStr(rec(4))
 
-                wsD.Cells(outRow, colTaskName).Value = globalPrefix & policySubText & " (" & entityDisplay & ")"
+                'Make it look like existing rows: Prefix + PolicySub + " (" + Entity + ")"
+                wsD.Cells(outRow, colTaskName).Value = usePrefix & policySubText & " (" & entityDisplay & ")"
                 wsD.Cells(outRow, colDesc).Value = CStr(rec(0))
                 wsD.Cells(outRow, colAssigned).Value = CStr(rec(1))
 
@@ -173,7 +193,8 @@ NextR1:
 
                 existing.Add key2, outRow
 
-                LogEvent wsLog, "ADDED", entityDisplay, policySubText, outRow, "", "Created missing Policy Sub-Domain row."
+                LogEvent wsLog, "ADDED", entityDisplay, policySubText, outRow, "", _
+                         "Added missing row using prefix: [" & usePrefix & "]"
             End If
         Next polKey
 
@@ -188,6 +209,40 @@ CleanExit:
     Application.DisplayAlerts = True
     Application.ScreenUpdating = True
 End Sub
+
+'==========================================================
+' IMPORTANT: Reject template/example prefixes like "[Division/Country] ..."
+'==========================================================
+Private Function IsGoodPrefix(ByVal pref As String) As Boolean
+    Dim t As String
+    t = LCase$(pref)
+
+    If InStr(1, pref, "[", vbTextCompare) > 0 Or InStr(1, pref, "]", vbTextCompare) > 0 Then
+        IsGoodPrefix = False
+        Exit Function
+    End If
+
+    If InStr(1, t, "issue name", vbTextCompare) > 0 Or InStr(1, t, "entity name", vbTextCompare) > 0 Then
+        IsGoodPrefix = False
+        Exit Function
+    End If
+
+    'Must contain "sweep" and "2" and "-"
+    If InStr(1, t, "sweep", vbTextCompare) = 0 Then
+        IsGoodPrefix = False
+        Exit Function
+    End If
+    If InStr(1, t, "2", vbTextCompare) = 0 Then
+        IsGoodPrefix = False
+        Exit Function
+    End If
+    If InStr(1, t, "-", vbTextCompare) = 0 Then
+        IsGoodPrefix = False
+        Exit Function
+    End If
+
+    IsGoodPrefix = True
+End Function
 
 '==========================================================
 ' Build lookup: policySubDomain -> remediation fields
@@ -213,7 +268,8 @@ Private Function BuildIssueReportPolicySubLookup(ByVal srcFile As String, ByVal 
 
     hdrRowS = FindHeaderRowLoose(wsS, Array("Policy Sub-Domain", "Remediation Plan", "Remediation Owner", "Remediation Completion Date"), 200)
     If hdrRowS = 0 Then
-        LogEvent wsLog, "ERROR", entityDisplay, "", "", "", "Missing headers in Issue Report Listing2 (Policy Sub-Domain/Remediation fields)."
+        LogEvent wsLog, "ERROR", entityDisplay, "", "", "", _
+                 "Missing headers in Issue Report Listing2 (Policy Sub-Domain/Remediation fields)."
         wbS.Close SaveChanges:=False
         Exit Function
     End If
@@ -300,7 +356,7 @@ Private Function ExtractEntityFromFilename(ByVal fileName As String) As String
 End Function
 
 '==========================================================
-' Parsing (latest logic for "EPD Sweep 2 - X (Entity)")
+' Parsing: supports "EPD Sweep 2 - X (Entity)" and similar
 '==========================================================
 Private Function ExtractBetweenParens(ByVal s As String) As String
     Dim p1 As Long, p2 As Long
@@ -392,7 +448,7 @@ Private Function ExtractPrefixUpToSweep2Dash(ByVal s As String) As String
 End Function
 
 '==========================================================
-' Log sheet helpers
+' Log helpers
 '==========================================================
 Private Function GetOrCreateLogSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
     On Error Resume Next
@@ -423,8 +479,6 @@ Private Sub LogEvent(ByVal wsLog As Worksheet, ByVal status As String, ByVal ent
     wsLog.Cells(nextRow, 4).Value = policySub
     If Len(CStr(rowNum)) > 0 Then wsLog.Cells(nextRow, 5).Value = rowNum
     wsLog.Cells(nextRow, 6).Value = message
-
-    If nextRow Mod 25 = 0 Then wsLog.Columns("A:F").EntireColumn.AutoFit
 End Sub
 
 Private Function DenormalizeForLog(ByVal k As String) As String
