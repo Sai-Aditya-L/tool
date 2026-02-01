@@ -1,0 +1,439 @@
+Option Explicit
+
+Public Sub Populate_And_Append_RemediationTasks_From_IssueReports()
+    Dim dstPath As Variant, folderPath As String
+    Dim wbD As Workbook, wsD As Worksheet
+    Dim hdrRowD As Long
+    Dim colTaskName As Long, colDesc As Long, colAssigned As Long, colDue As Long
+    
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    
+    'Pick Remediation Task file
+    dstPath = Application.GetOpenFilename("Excel Files (*.xlsx;*.xlsm), *.xlsx;*.xlsm", , _
+                                         "Select Remediation Task file")
+    If dstPath = False Then GoTo CleanExit
+    
+    Set wbD = Workbooks.Open(CStr(dstPath))
+    Set wsD = wbD.Worksheets(1) 'change if needed
+    
+    'Pick folder with Issue Report files
+    folderPath = PickFolder("Select folder containing Issue Report - <EntityName> files")
+    If Len(folderPath) = 0 Then GoTo CleanExit
+    
+    'Find destination headers
+    hdrRowD = FindHeaderRow(wsD, Array("Remediation Task Name", "Description", "Assigned to", "Due Date"), 80)
+    If hdrRowD = 0 Then
+        MsgBox "Could not find required headers in Remediation Task sheet:" & vbCrLf & _
+               "Remediation Task Name, Description, Assigned to, Due Date", vbCritical
+        GoTo CleanExit
+    End If
+    
+    colTaskName = FindHeaderColumn(wsD, hdrRowD, "Remediation Task Name")
+    colDesc = FindHeaderColumn(wsD, hdrRowD, "Description")
+    colAssigned = FindHeaderColumn(wsD, hdrRowD, "Assigned to")
+    colDue = FindHeaderColumn(wsD, hdrRowD, "Due Date")
+    
+    'Reduce Excel reformatting surprises
+    wsD.Columns(colTaskName).NumberFormat = "@"
+    wsD.Columns(colDesc).NumberFormat = "@"
+    wsD.Columns(colAssigned).NumberFormat = "@"
+    wsD.Columns(colDue).NumberFormat = "m/d/yyyy"
+    
+    'Build entity->file map from folder
+    Dim entityToFile As Object
+    Set entityToFile = BuildEntityFileMap(folderPath)
+    
+    'Build existing set: (entity + policySubDomain) -> row
+    Dim existing As Object
+    Set existing = CreateObject("Scripting.Dictionary")
+    
+    Dim globalPrefix As String
+    globalPrefix = "" 'we'll infer from first usable task name, else default
+    
+    Dim lastRowD As Long, r As Long
+    lastRowD = wsD.Cells(wsD.Rows.Count, colTaskName).End(xlUp).Row
+    
+    For r = hdrRowD + 1 To lastRowD
+        Dim t As String, ent As String, polSub As String, pref As String
+        t = Trim(CStr(wsD.Cells(r, colTaskName).Value))
+        If Len(t) = 0 Then GoTo NextR1
+        
+        ent = ExtractBetweenParens(t)
+        polSub = ExtractPolicySubDomainFromTaskName(t) 'after "sweep2 -" before "("
+        pref = ExtractPrefixUpToSweep2Dash(t)          'e.g. "epd sweep2 - "
+        
+        If Len(globalPrefix) = 0 And Len(pref) > 0 Then globalPrefix = pref
+        
+        If Len(ent) > 0 And Len(polSub) > 0 Then
+            Dim k As String
+            k = NormalizeKey(ent) & "||" & NormalizeKey(polSub)
+            If Not existing.Exists(k) Then existing.Add k, r
+        End If
+        
+NextR1:
+    Next r
+    
+    If Len(globalPrefix) = 0 Then globalPrefix = "sweep2 - "
+    
+    'Cache lookups per entity (entityKey -> dictionary(polSubKey -> rec(plan, owner, date)))
+    Dim lookupCache As Object
+    Set lookupCache = CreateObject("Scripting.Dictionary")
+    
+    'Process each entity file:
+    Dim entKey As Variant
+    For Each entKey In entityToFile.Keys
+        Dim srcFile As String
+        srcFile = entityToFile(entKey)
+        
+        Dim polLookup As Object
+        If Not lookupCache.Exists(entKey) Then
+            Set polLookup = BuildIssueReportPolicySubLookup(srcFile)
+            lookupCache.Add entKey, polLookup
+        Else
+            Set polLookup = lookupCache(entKey)
+        End If
+        
+        'Now for each policy subdomain in the issue report file:
+        Dim polKey As Variant
+        For Each polKey In polLookup.Keys
+            Dim rec As Variant
+            rec = polLookup(polKey) '0 plan, 1 owner, 2 date, 3 originalPolicySubText
+            
+            Dim key2 As String
+            key2 = entKey & "||" & polKey
+            
+            If existing.Exists(key2) Then
+                'Update existing row
+                Dim rowNum As Long
+                rowNum = CLng(existing(key2))
+                
+                wsD.Cells(rowNum, colDesc).Value = CStr(rec(0))
+                wsD.Cells(rowNum, colAssigned).Value = CStr(rec(1))
+                
+                If IsDate(rec(2)) Then
+                    wsD.Cells(rowNum, colDue).Value = CDate(rec(2))
+                Else
+                    wsD.Cells(rowNum, colDue).Value = CStr(rec(2))
+                End If
+            Else
+                'Append new row
+                Dim outRow As Long
+                outRow = wsD.Cells(wsD.Rows.Count, colTaskName).End(xlUp).Row + 1
+                If outRow <= hdrRowD Then outRow = hdrRowD + 1
+                
+                Dim policySubText As String
+                policySubText = CStr(rec(3)) 'original readable policy subdomain
+                
+                wsD.Cells(outRow, colTaskName).Value = globalPrefix & policySubText & "(" & DenormalizeEntityKey(entKey) & ")"
+                wsD.Cells(outRow, colDesc).Value = CStr(rec(0))
+                wsD.Cells(outRow, colAssigned).Value = CStr(rec(1))
+                
+                If IsDate(rec(2)) Then
+                    wsD.Cells(outRow, colDue).Value = CDate(rec(2))
+                Else
+                    wsD.Cells(outRow, colDue).Value = CStr(rec(2))
+                End If
+                
+                existing.Add key2, outRow
+            End If
+        Next polKey
+    Next entKey
+    
+    MsgBox "Done! Updated existing rows and added missing Policy Sub-Domains per entity.", vbInformation
+
+CleanExit:
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+End Sub
+
+'==========================================================
+' Build lookup: policySubDomain -> remediation fields
+'==========================================================
+Private Function BuildIssueReportPolicySubLookup(ByVal srcFile As String) As Object
+    Dim wbS As Workbook, wsS As Worksheet
+    Dim hdrRowS As Long
+    Dim colPolSub As Long, colPlan As Long, colOwner As Long, colDate As Long
+    
+    Set wbS = Workbooks.Open(srcFile, ReadOnly:=True)
+    
+    On Error Resume Next
+    Set wsS = wbS.Worksheets("Issue Report Listing2")
+    On Error GoTo 0
+    If wsS Is Nothing Then Set wsS = wbS.Worksheets(1)
+    
+    'Find header row (loose/robust)
+    hdrRowS = FindHeaderRowLoose(wsS, Array("Policy Sub-Domain", "Remediation Plan", "Remediation Owner", "Remediation Completion Date"), 150)
+    If hdrRowS = 0 Then
+        wbS.Close SaveChanges:=False
+        Set BuildIssueReportPolicySubLookup = CreateObject("Scripting.Dictionary")
+        Exit Function
+    End If
+    
+    colPolSub = FindHeaderColumnLoose(wsS, hdrRowS, "Policy Sub-Domain")
+    colPlan = FindHeaderColumnLoose(wsS, hdrRowS, "Remediation Plan")
+    colOwner = FindHeaderColumnLoose(wsS, hdrRowS, "Remediation Owner")
+    colDate = FindHeaderColumnLoose(wsS, hdrRowS, "Remediation Completion Date")
+    
+    Dim dict As Object
+    Set dict = CreateObject("Scripting.Dictionary")
+    
+    Dim lastRow As Long
+    lastRow = wsS.UsedRange.Rows(wsS.UsedRange.Rows.Count).Row
+    
+    Dim r As Long
+    For r = hdrRowS + 1 To lastRow
+        Dim polSub As String
+        polSub = Trim(CStr(GetMergedValue(wsS.Cells(r, colPolSub))))
+        If Len(polSub) = 0 Then GoTo NextRow
+        
+        Dim polKey As String
+        polKey = NormalizeKey(polSub)
+        
+        'Take the first occurrence only (typical since issue reports have merged blocks)
+        If Not dict.Exists(polKey) Then
+            Dim plan As String, owner As String, dt As Variant
+            plan = CStr(GetMergedValue(wsS.Cells(r, colPlan)))
+            owner = CStr(GetMergedValue(wsS.Cells(r, colOwner)))
+            dt = GetMergedValue(wsS.Cells(r, colDate))
+            
+            Dim rec(3) As Variant
+            rec(0) = plan
+            rec(1) = owner
+            rec(2) = dt
+            rec(3) = polSub 'keep original readable version
+            
+            dict.Add polKey, rec
+        End If
+        
+NextRow:
+    Next r
+    
+    wbS.Close SaveChanges:=False
+    Set BuildIssueReportPolicySubLookup = dict
+End Function
+
+'==========================================================
+' Entity -> file map
+'==========================================================
+Private Function BuildEntityFileMap(ByVal folderPath As String) As Object
+    Dim dict As Object
+    Set dict = CreateObject("Scripting.Dictionary")
+    
+    If Right$(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
+    
+    Dim f As String
+    f = Dir(folderPath & "Issue Report - *.xls*")
+    Do While Len(f) > 0
+        Dim entity As String, key As String
+        entity = ExtractEntityFromFilename(f)
+        key = NormalizeKey(entity)
+        If Len(key) > 0 Then
+            If Not dict.Exists(key) Then dict.Add key, folderPath & f
+        End If
+        f = Dir()
+    Loop
+    
+    Set BuildEntityFileMap = dict
+End Function
+
+Private Function ExtractEntityFromFilename(ByVal fileName As String) As String
+    Dim base As String, prefix As String
+    base = fileName
+    
+    If InStrRev(base, ".") > 0 Then base = Left$(base, InStrRev(base, ".") - 1)
+    
+    prefix = "Issue Report - "
+    If LCase$(Left$(base, Len(prefix))) = LCase$(prefix) Then
+        base = Mid$(base, Len(prefix) + 1)
+    End If
+    
+    ExtractEntityFromFilename = Trim(base)
+End Function
+
+'==========================================================
+' Parsing Remediation Task Name (your rule)
+'==========================================================
+Private Function ExtractBetweenParens(ByVal s As String) As String
+    Dim p1 As Long, p2 As Long
+    p1 = InStrRev(s, "(")
+    p2 = InStrRev(s, ")")
+    If p1 > 0 And p2 > p1 Then
+        ExtractBetweenParens = Trim(Mid$(s, p1 + 1, p2 - p1 - 1))
+    Else
+        ExtractBetweenParens = ""
+    End If
+End Function
+
+'Policy Sub-Domain = text after "sweep2 -" and before "("
+Private Function ExtractPolicySubDomainFromTaskName(ByVal s As String) As String
+    Dim lowerS As String, p As Long, pStart As Long, pParen As Long
+    lowerS = LCase$(s)
+    
+    p = InStr(1, lowerS, "sweep2", vbTextCompare)
+    If p = 0 Then
+        ExtractPolicySubDomainFromTaskName = ""
+        Exit Function
+    End If
+    
+    pStart = InStr(p, lowerS, "-", vbTextCompare)
+    If pStart = 0 Then
+        ExtractPolicySubDomainFromTaskName = ""
+        Exit Function
+    End If
+    
+    pStart = pStart + 1 'after hyphen
+    
+    'skip spaces
+    Do While pStart <= Len(s) And Mid$(s, pStart, 1) = " "
+        pStart = pStart + 1
+    Loop
+    
+    pParen = InStrRev(s, "(")
+    If pParen = 0 Or pParen <= pStart Then
+        ExtractPolicySubDomainFromTaskName = Trim(Mid$(s, pStart))
+    Else
+        ExtractPolicySubDomainFromTaskName = Trim(Mid$(s, pStart, pParen - pStart))
+    End If
+End Function
+
+'Prefix = everything from start through "sweep2 -" (including trailing space if present)
+Private Function ExtractPrefixUpToSweep2Dash(ByVal s As String) As String
+    Dim lowerS As String
+    lowerS = LCase$(s)
+    
+    Dim p As Long
+    p = InStr(1, lowerS, "sweep2", vbTextCompare)
+    If p = 0 Then
+        ExtractPrefixUpToSweep2Dash = ""
+        Exit Function
+    End If
+    
+    Dim dashPos As Long
+    dashPos = InStr(p, lowerS, "-", vbTextCompare)
+    If dashPos = 0 Then
+        ExtractPrefixUpToSweep2Dash = ""
+        Exit Function
+    End If
+    
+    Dim endPos As Long
+    endPos = dashPos + 1 'include the hyphen
+    
+    'include one trailing space if present
+    If endPos < Len(s) And Mid$(s, endPos + 1, 1) = " " Then
+        endPos = endPos + 1
+    End If
+    
+    ExtractPrefixUpToSweep2Dash = Left$(s, endPos)
+End Function
+
+'We only store normalized entity keys; for writing we want the original entity text.
+'This returns the key itself as a best-effort readable string.
+Private Function DenormalizeEntityKey(ByVal entityKey As String) As String
+    'Entity in filename should already be well-formatted; but we only kept normalized keys.
+    'Best approach: write the normalized key back as-is (still readable).
+    'If you want perfect casing, we can store original filename entity too.
+    DenormalizeEntityKey = entityKey
+End Function
+
+'==========================================================
+' Header detection
+'==========================================================
+Private Function FindHeaderRow(ws As Worksheet, headers As Variant, maxRowsToScan As Long) As Long
+    Dim r As Long, i As Long
+    For r = 1 To maxRowsToScan
+        For i = LBound(headers) To UBound(headers)
+            If FindHeaderColumn(ws, r, CStr(headers(i))) = 0 Then GoTo NextR
+        Next i
+        FindHeaderRow = r
+        Exit Function
+NextR:
+    Next r
+    FindHeaderRow = 0
+End Function
+
+Private Function FindHeaderColumn(ws As Worksheet, headerRow As Long, headerText As String) As Long
+    Dim lastCol As Long, c As Long, v As String
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastCol
+        v = Trim(CStr(ws.Cells(headerRow, c).Value))
+        If StrComp(v, headerText, vbTextCompare) = 0 Then
+            FindHeaderColumn = c
+            Exit Function
+        End If
+    Next c
+    FindHeaderColumn = 0
+End Function
+
+Private Function FindHeaderRowLoose(ws As Worksheet, headers As Variant, maxRowsToScan As Long) As Long
+    Dim r As Long, i As Long
+    For r = 1 To maxRowsToScan
+        For i = LBound(headers) To UBound(headers)
+            If FindHeaderColumnLoose(ws, r, CStr(headers(i))) = 0 Then GoTo NextR
+        Next i
+        FindHeaderRowLoose = r
+        Exit Function
+NextR:
+    Next r
+    FindHeaderRowLoose = 0
+End Function
+
+Private Function FindHeaderColumnLoose(ws As Worksheet, headerRow As Long, headerText As String) As Long
+    Dim lastCol As Long, c As Long
+    Dim target As String, v As String
+    target = NormalizeKey(headerText)
+    
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+    For c = 1 To lastCol
+        v = NormalizeKey(CStr(ws.Cells(headerRow, c).Value))
+        If v = target Then
+            FindHeaderColumnLoose = c
+            Exit Function
+        End If
+        If InStr(1, v, target, vbTextCompare) > 0 Or InStr(1, target, v, vbTextCompare) > 0 Then
+            FindHeaderColumnLoose = c
+            Exit Function
+        End If
+    Next c
+    FindHeaderColumnLoose = 0
+End Function
+
+'==========================================================
+' General utilities
+'==========================================================
+Private Function GetMergedValue(ByVal cell As Range) As Variant
+    If cell.MergeCells Then
+        GetMergedValue = cell.MergeArea.Cells(1, 1).Value
+    Else
+        GetMergedValue = cell.Value
+    End If
+End Function
+
+Private Function NormalizeKey(ByVal s As String) As String
+    Dim t As String
+    t = LCase$(Trim(CStr(s)))
+    t = Replace(t, vbCrLf, " ")
+    t = Replace(t, vbCr, " ")
+    t = Replace(t, vbLf, " ")
+    t = Replace(t, ChrW(160), " ")
+    Do While InStr(t, "  ") > 0
+        t = Replace(t, "  ", " ")
+    Loop
+    NormalizeKey = t
+End Function
+
+Private Function PickFolder(prompt As String) As String
+    On Error GoTo Fail
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFolderPicker)
+    fd.Title = prompt
+    fd.AllowMultiSelect = False
+    If fd.Show = -1 Then
+        PickFolder = fd.SelectedItems(1)
+    Else
+        PickFolder = ""
+    End If
+    Exit Function
+Fail:
+    PickFolder = ""
+End Function
