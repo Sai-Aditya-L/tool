@@ -72,7 +72,7 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
     wsD.Columns(colDue).NumberFormat = "m/d/yyyy"
 
     '============================================================
-    ' SOURCE HEADERS (STRICT / KEYWORD-BASED)
+    ' SOURCE HEADERS (KEYWORD-BASED)
     '============================================================
     Dim hdrRowS As Long
     Dim colPolSub As Long, colSystems As Long, colQID As Long
@@ -87,23 +87,23 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
     End If
 
     colPolSub = FindColByKeywords(wsS, hdrRowS, Array("policy", "sub", "domain"))
-    colSystems = FindColByKeywords(wsS, hdrRowS, Array("systems", "exhibiting", "issue")) 'MUST include systems
+    colSystems = FindColByKeywords(wsS, hdrRowS, Array("systems", "exhibiting", "issue"))
     colQID = FindColByKeywords(wsS, hdrRowS, Array("question", "id"))
-
     colOrigQ = FindColByKeywords(wsS, hdrRowS, Array("original", "question"))
-
     colPlan = FindColByKeywords(wsS, hdrRowS, Array("remediation", "plan"))
     colOwner = FindColByKeywords(wsS, hdrRowS, Array("remediation", "owner"))
     colPlannedDate = FindColByKeywords(wsS, hdrRowS, Array("planned", "completion", "date"))
 
     If colPolSub = 0 Or colSystems = 0 Or colQID = 0 Or colOrigQ = 0 Or colPlan = 0 Or colOwner = 0 Or colPlannedDate = 0 Then
-        MsgBox "Missing required columns in CleanIssueReport (Policy Sub-Domain, Systems Exhibiting the Issue, Question ID, Original Question, Remediation Plan, Remediation Owner, Planned Remediation Completion Date).", vbCritical
+        MsgBox "Missing required columns in CleanIssueReport." & vbCrLf & _
+               "Need: Policy Sub-Domain, Systems Exhibiting the Issue, Question ID, Original Question," & vbCrLf & _
+               "Remediation Plan, Remediation Owner, Planned Remediation Completion Date.", vbCritical
         LogEvent wsLog, "ERROR", "", "", "", "Missing required source columns."
         GoTo CleanExit
     End If
 
     '============================================================
-    ' BUILD DEST INDEXES + CHOOSE MOST COMMON PREFIX
+    ' BUILD DEST INDEXES + LEARN MOST COMMON PREFIX
     '============================================================
     Dim existingMain As Object, existingIssue As Object
     Dim entityPrefix As Object
@@ -116,10 +116,7 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
 
     BuildDestIndexes_MostCommonPrefix wsD, hdrRowD, colTaskName, existingMain, existingIssue, entityPrefix, globalPrefix
 
-    If Len(globalPrefix) = 0 Then
-        'Fallback default
-        globalPrefix = "DTS Sweep 2 - "
-    End If
+    If Len(globalPrefix) = 0 Then globalPrefix = "DTS Sweep 2 - "
 
     '============================================================
     ' PROCESS SOURCE ROWS
@@ -152,14 +149,12 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
         Set entities = ParseEntities(systemsRaw)
         If entities.Count = 0 Then GoTo NextRow
 
-        'Remediation fields
         Dim planText As String, ownerText As String
         Dim dueVal As Variant
         planText = Trim(CStr(GetMergedValue(wsS.Cells(r, colPlan))))
         ownerText = Trim(CStr(GetMergedValue(wsS.Cells(r, colOwner))))
         dueVal = GetMergedValue(wsS.Cells(r, colPlannedDate))
 
-        'Snippet ONLY from Original Question
         Dim qText As String
         qText = Trim(CStr(GetMergedValue(wsS.Cells(r, colOrigQ))))
 
@@ -183,15 +178,16 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
 
             If Not seenMainInRun.Exists(keyMain) Then
                 seenMainInRun.Add keyMain, True
+
                 UpsertMainRow wsD, hdrRowD, colTaskName, colIssueId, colDesc, colAssigned, colDue, _
                              existingMain, keyMain, prefixText, pol, entityDisplay, _
                              planText, ownerText, dueVal, wsLog
+
             Else
-                'Extra rows
                 Dim snip As String, snipBaseKey As String, uniqSnip As String
 
-                snip = MakeBriefSnippet(qText, 4) '<<< change 4 to 3 if you want
-                If Len(snip) = 0 Then snip = "extra"
+                snip = MakeMeaningfulSnippet(qText, 3, 4)
+                If Len(snip) = 0 Then snip = "Extra"
 
                 snipBaseKey = keyMain & "||" & NormalizeKey(snip)
                 If snippetCounts.Exists(snipBaseKey) Then
@@ -317,14 +313,12 @@ Private Function FindColByKeywords(ByVal ws As Worksheet, ByVal headerRow As Lon
         Dim v As String
         v = NormalizeKey(CStr(ws.Cells(headerRow, c).Value))
         If Len(v) = 0 Then GoTo NextC
-
         If ContainsAllKeywords(v, keywords) Then
             FindColByKeywords = c
             Exit Function
         End If
 NextC:
     Next c
-
     FindColByKeywords = 0
 End Function
 
@@ -340,7 +334,7 @@ Private Function ContainsAllKeywords(ByVal textNorm As String, ByVal keywords As
 End Function
 
 '============================================================
-' DEST INDEX + PREFIX (MOST COMMON PREFIX)
+' DEST INDEX + PREFIX LEARNING
 '============================================================
 Private Sub BuildDestIndexes_MostCommonPrefix(ByVal wsD As Worksheet, ByVal hdrRowD As Long, ByVal colTaskName As Long, _
     ByVal existingMain As Object, ByVal existingIssue As Object, ByVal entityPrefix As Object, ByRef globalPrefix As String)
@@ -642,53 +636,164 @@ Private Function IsGoodPrefix(ByVal pref As String) As Boolean
 End Function
 
 '============================================================
-' SNIPPET (Original Question)
+' MEANINGFUL SNIPPET (Original Question)
 '============================================================
-Private Function MakeBriefSnippet(ByVal textIn As String, ByVal maxWords As Long) As String
+Private Function MakeMeaningfulSnippet(ByVal questionText As String, ByVal minWords As Long, ByVal maxWords As Long) As String
     Dim t As String
-    t = Trim(CStr(textIn))
+    t = LCase$(Trim(CStr(questionText)))
     If Len(t) = 0 Then
-        MakeBriefSnippet = ""
+        MakeMeaningfulSnippet = ""
         Exit Function
     End If
 
     t = Replace(t, vbCrLf, " ")
     t = Replace(t, vbCr, " ")
     t = Replace(t, vbLf, " ")
-
-    t = Replace(t, "?", "")
-    t = Replace(t, ".", "")
-    t = Replace(t, ":", "")
-    t = Replace(t, ";", "")
-    t = Replace(t, ",", "")
-    t = Replace(t, "(", "")
-    t = Replace(t, ")", "")
-    t = Replace(t, """", "")
-
+    t = Replace(t, "?", " ")
+    t = Replace(t, ".", " ")
+    t = Replace(t, ",", " ")
+    t = Replace(t, ";", " ")
+    t = Replace(t, ":", " ")
+    t = Replace(t, "(", " ")
+    t = Replace(t, ")", " ")
+    t = Replace(t, """", " ")
     Do While InStr(t, "  ") > 0
         t = Replace(t, "  ", " ")
     Loop
 
+    Dim stopWords As Object: Set stopWords = CreateObject("Scripting.Dictionary")
+    AddStopWords stopWords
+
+    Dim boosts As Object: Set boosts = CreateObject("Scripting.Dictionary")
+    AddBoostWords boosts
+
     Dim parts() As String
     parts = Split(t, " ")
 
-    Dim i As Long, out As String, cnt As Long
-    out = ""
-    cnt = 0
+    Dim boosted As New Collection, normal As New Collection
+    Dim i As Long
 
+    For i = LBound(parts) To UBound(parts)
+        Dim w As String
+        w = Trim(parts(i))
+        If Len(w) = 0 Then GoTo NextI
+        If Len(w) <= 2 Then GoTo NextI
+        If IsNumeric(w) Then GoTo NextI
+        If stopWords.Exists(w) Then GoTo NextI
+
+        If Right$(w, 1) = "s" And Len(w) > 4 Then w = Left$(w, Len(w) - 1)
+
+        If boosts.Exists(w) Then
+            boosted.Add w
+        Else
+            normal.Add w
+        End If
+NextI:
+    Next i
+
+    Dim outWords As New Collection
+    Dim seen As Object: Set seen = CreateObject("Scripting.Dictionary")
+
+    Dim added As Long: added = 0
+    Dim item As Variant
+
+    For Each item In boosted
+        If Not seen.Exists(CStr(item)) Then
+            seen.Add CStr(item), True
+            outWords.Add CStr(item)
+            added = added + 1
+            If added >= maxWords Then Exit For
+        End If
+    Next item
+
+    If added < maxWords Then
+        For Each item In normal
+            If Not seen.Exists(CStr(item)) Then
+                seen.Add CStr(item), True
+                outWords.Add CStr(item)
+                added = added + 1
+                If added >= maxWords Then Exit For
+            End If
+        Next item
+    End If
+
+    Dim snippet As String
+    snippet = JoinCollection(outWords, IIf(added < minWords, minWords, added))
+    If Len(snippet) = 0 Then snippet = FallbackFirstWords(questionText, maxWords)
+
+    MakeMeaningfulSnippet = ProperWords(snippet)
+End Function
+
+Private Sub AddStopWords(ByVal dict As Object)
+    Dim arr, i As Long
+    arr = Array("the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with", "without", _
+                "is", "are", "was", "were", "be", "been", "being", _
+                "do", "does", "did", "can", "could", "should", "would", "will", _
+                "have", "has", "had", "may", "might", "must", _
+                "you", "your", "we", "our", "they", "their", "it", "this", "that", "these", "those", _
+                "when", "where", "what", "which", "who", "whom", "why", "how", _
+                "if", "then", "than", "as", "at", "by", "from", "into", "up", "down", _
+                "not", "no", "yes", "n/a", "na")
+    For i = LBound(arr) To UBound(arr)
+        dict(arr(i)) = True
+    Next i
+End Sub
+
+Private Sub AddBoostWords(ByVal dict As Object)
+    Dim arr, i As Long
+    arr = Array("mfa", "multifactor", "multi-factor", "authentication", "authorize", "authorization", _
+                "access", "admin", "account", "privilege", "role", "password", "credential", _
+                "logging", "monitoring", "scan", "scanning", "vulnerability", "patch", "encryption", _
+                "key", "network", "firewall", "endpoint", "audit", "segregation", "review", "recertification")
+    For i = LBound(arr) To UBound(arr)
+        dict(arr(i)) = True
+    Next i
+End Sub
+
+Private Function JoinCollection(ByVal col As Collection, ByVal maxTake As Long) As String
+    Dim i As Long, out As String
+    out = ""
+    For i = 1 To col.Count
+        If i > maxTake Then Exit For
+        If out = "" Then out = CStr(col(i)) Else out = out & " " & CStr(col(i))
+    Next i
+    JoinCollection = Trim(out)
+End Function
+
+Private Function FallbackFirstWords(ByVal textIn As String, ByVal maxWords As Long) As String
+    Dim t As String
+    t = Trim(CStr(textIn))
+    t = Replace(t, vbCrLf, " ")
+    t = Replace(t, vbCr, " ")
+    t = Replace(t, vbLf, " ")
+    Do While InStr(t, "  ") > 0
+        t = Replace(t, "  ", " ")
+    Loop
+
+    Dim parts() As String, i As Long, out As String, cnt As Long
+    parts = Split(t, " ")
+    out = "": cnt = 0
     For i = LBound(parts) To UBound(parts)
         If Len(parts(i)) > 0 Then
             cnt = cnt + 1
-            If out = "" Then
-                out = parts(i)
-            Else
-                out = out & " " & parts(i)
-            End If
+            If out = "" Then out = parts(i) Else out = out & " " & parts(i)
             If cnt >= maxWords Then Exit For
         End If
     Next i
+    FallbackFirstWords = Trim(out)
+End Function
 
-    MakeBriefSnippet = Trim(out)
+Private Function ProperWords(ByVal s As String) As String
+    Dim parts() As String, i As Long
+    s = Trim(s)
+    If Len(s) = 0 Then ProperWords = "": Exit Function
+    parts = Split(LCase$(s), " ")
+    For i = LBound(parts) To UBound(parts)
+        If Len(parts(i)) > 0 Then
+            parts(i) = UCase$(Left$(parts(i), 1)) & Mid$(parts(i), 2)
+        End If
+    Next i
+    ProperWords = Join(parts, " ")
 End Function
 
 '============================================================
@@ -698,7 +803,6 @@ Private Function GetOrCreateLogSheet(ByVal wb As Workbook, ByVal sheetName As St
     On Error Resume Next
     Set GetOrCreateLogSheet = wb.Worksheets(sheetName)
     On Error GoTo 0
-
     If GetOrCreateLogSheet Is Nothing Then
         Set GetOrCreateLogSheet = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
         GetOrCreateLogSheet.Name = sheetName
@@ -716,7 +820,6 @@ Private Sub LogEvent(ByVal wsLog As Worksheet, ByVal status As String, ByVal ent
     Dim nextRow As Long
     nextRow = wsLog.Cells(wsLog.Rows.Count, 1).End(xlUp).Row + 1
     If nextRow < 2 Then nextRow = 2
-
     wsLog.Cells(nextRow, 1).Value = Now
     wsLog.Cells(nextRow, 2).Value = status
     wsLog.Cells(nextRow, 3).Value = entity
