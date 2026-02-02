@@ -1,0 +1,79 @@
+Private Function MakeMeaningfulSnippetPhrase(ByVal questionText As String, ByVal minWords As Long, ByVal maxWords As Long) As String
+    Dim tokens As Collection, rawTokens As Collection
+    Set tokens = New Collection
+    Set rawTokens = New Collection
+
+    Dim cleaned As String
+    cleaned = CleanForTokenize(questionText)
+    If Len(cleaned) = 0 Then
+        MakeMeaningfulSnippetPhrase = ""
+        Exit Function
+    End If
+
+    Dim parts() As String
+    parts = Split(cleaned, " ")
+
+    ' IMPORTANT: "Stop" is a VBA keyword, so DO NOT name a variable stop
+    Dim stopDict As Object
+    Set stopDict = CreateObject("Scripting.Dictionary")
+    AddStopWords stopDict
+
+    Dim boosts As Object
+    Set boosts = CreateObject("Scripting.Dictionary")
+    AddBoostWordsWithWeights boosts
+
+    Dim i As Long
+    For i = LBound(parts) To UBound(parts)
+        Dim wRaw As String, wNorm As String
+        wRaw = Trim(parts(i))
+        If Len(wRaw) = 0 Then GoTo NextI
+
+        wNorm = LCase$(wRaw)
+        If stopDict.Exists(wNorm) Then GoTo NextI
+        If Len(wNorm) <= 2 Then GoTo NextI
+        If IsNumeric(wNorm) Then GoTo NextI
+
+        rawTokens.Add wRaw
+        tokens.Add wNorm
+
+NextI:
+    Next i
+
+    If tokens.Count = 0 Then
+        MakeMeaningfulSnippetPhrase = ""
+        Exit Function
+    End If
+
+    Dim bestPhrase As String
+    bestPhrase = ""
+    Dim bestScore As Double
+    bestScore = -1#
+
+    Dim idx As Long
+    For idx = 1 To tokens.Count
+        Dim t As String
+        t = CStr(tokens(idx))
+
+        Dim centerWeight As Double
+        centerWeight = 0#
+        If boosts.Exists(t) Then centerWeight = CDbl(boosts(t))
+
+        Dim win As Long
+        For win = maxWords To minWords Step -1
+            Dim phrase As String, score As Double
+            phrase = BuildWindowPhrase(rawTokens, idx, win)
+            If Len(phrase) = 0 Then GoTo NextWin
+
+            score = ScorePhrase(phrase, boosts, centerWeight, idx, win)
+            If score > bestScore Then
+                bestScore = score
+                bestPhrase = phrase
+            End If
+
+NextWin:
+        Next win
+    Next idx
+
+    If Len(bestPhrase) = 0 Then bestPhrase = FirstNWords(rawTokens, maxWords)
+    MakeMeaningfulSnippetPhrase = ProperWords(bestPhrase)
+End Function
