@@ -1,9 +1,9 @@
 Option Explicit
 
 '===========================================================
-' MAIN MACRO
+' MAIN
 '===========================================================
-Public Sub Build_RemediationTasks_From_CleanIssueReport()
+Public Sub Build_RemediationTasks_From_CleanIssueReport_V2()
 
     Dim issuePath As String, taskPath As String
     issuePath = PickExcelFile("Select the ISSUE REPORT workbook (sheet: CleanIssueReport)")
@@ -38,27 +38,35 @@ Public Sub Build_RemediationTasks_From_CleanIssueReport()
     Dim wsTask As Worksheet
     Set wsTask = FindSheetByHeaderFuzzy(wbTask, "Remediation Task Name")
     If wsTask Is Nothing Then
-        MsgBox "Could not find a destination sheet that contains header 'Remediation Task Name' in row 1.", vbCritical
+        MsgBox "Could not find destination sheet with header 'Remediation Task Name' in row 1.", vbCritical
         GoTo CleanExit
     End If
 
     '-------------------------------------------------------
-    ' FIND ISSUE REPORT COLUMNS (FUZZY)
+    ' ISSUE REPORT COLUMNS (STRICT FIRST, THEN FUZZY FALLBACK)
     '-------------------------------------------------------
     Dim cPol As Long, cEnt As Long, cQID As Long, cOrigQ As Long
     Dim cPlan As Long, cOwner As Long, cDue As Long
 
-    cPol = FindHeaderColFuzzy(wsIssue, 1, "Policy Sub-Domain")
-    cEnt = FindHeaderColFuzzy(wsIssue, 1, "Systems Exhibiting the Issue")
-    cQID = FindHeaderColFuzzy(wsIssue, 1, "Question ID")
-    cOrigQ = FindHeaderColFuzzy(wsIssue, 1, "Original Question")
+    cPol = FindHeaderColStrict(wsIssue, 1, "Policy Sub-Domain")
+    If cPol = 0 Then cPol = FindHeaderColFuzzy(wsIssue, 1, "Policy Sub-Domain")
+
+    ' FORCE entity column to Systems Exhibiting the Issue
+    cEnt = FindHeaderColStrict(wsIssue, 1, "Systems Exhibiting the Issue")
+    If cEnt = 0 Then cEnt = FindHeaderColFuzzy(wsIssue, 1, "Systems Exhibiting the Issue")
+
+    cQID = FindHeaderColStrict(wsIssue, 1, "Question ID")
+    If cQID = 0 Then cQID = FindHeaderColFuzzy(wsIssue, 1, "Question ID")
+
+    cOrigQ = FindHeaderColStrict(wsIssue, 1, "Original Question")
+    If cOrigQ = 0 Then cOrigQ = FindHeaderColFuzzy(wsIssue, 1, "Original Question")
 
     cPlan = FindHeaderColAnyFuzzy(wsIssue, 1, Array("Remediation Plan", "Planned Remediation", "Suggested Remediation", "Remediation"))
     cOwner = FindHeaderColAnyFuzzy(wsIssue, 1, Array("Remediation Owner", "Owner", "Assignee", "Assigned To"))
     cDue = FindHeaderColAnyFuzzy(wsIssue, 1, Array("Planned Remediation Completion Date", "Remediation Completion Date", "Completion Date", "Due Date"))
 
     If cPol = 0 Or cEnt = 0 Or cQID = 0 Or cOrigQ = 0 Or cPlan = 0 Or cOwner = 0 Or cDue = 0 Then
-        MsgBox "Missing one or more required columns on CleanIssueReport." & vbCrLf & vbCrLf & _
+        MsgBox "Missing required columns on CleanIssueReport." & vbCrLf & vbCrLf & _
                "Found headers (row 1):" & vbCrLf & ListHeaders(wsIssue, 1) & vbCrLf & vbCrLf & _
                "Required headers:" & vbCrLf & _
                "- Policy Sub-Domain" & vbCrLf & _
@@ -72,7 +80,7 @@ Public Sub Build_RemediationTasks_From_CleanIssueReport()
     End If
 
     '-------------------------------------------------------
-    ' FIND DESTINATION COLUMNS (FUZZY)
+    ' DESTINATION COLUMNS
     '-------------------------------------------------------
     Dim tTaskName As Long, tDesc As Long, tAssigned As Long, tDue As Long, tIssueId As Long
 
@@ -88,21 +96,24 @@ Public Sub Build_RemediationTasks_From_CleanIssueReport()
     End If
 
     '-------------------------------------------------------
-    ' DETERMINE PREFIX (DTS/EPD/AN/etc.)
+    ' PREFIX (MORE RELIABLE)
     '-------------------------------------------------------
     Dim prefix As String
-    prefix = ExtractPrefixFromFilename(issuePath)
+    prefix = DetectPrefixFromFilenameSmart(issuePath)
     If Len(prefix) = 0 Then prefix = DetectPrefixFromTasks(wsTask, tTaskName)
-    If Len(prefix) = 0 Then prefix = "DTS" 'safe default
+
+    If Len(prefix) = 0 Then
+        prefix = InputBox("Enter the prefix to use (e.g., DTS, EPD, AN):", "Prefix", "DTS")
+        prefix = UCase$(Trim$(prefix))
+        If Len(prefix) = 0 Then prefix = "DTS"
+    End If
 
     '-------------------------------------------------------
-    ' BUILD INDEX OF EXISTING DEST ROWS TO PREVENT DUPLICATES
-    ' 1) mainKeyToRow: entity|policy -> first row encountered
-    ' 2) exactKeyExists: entity|policy|snippet -> already present (avoid duplicate reruns)
+    ' BUILD EXISTING INDEXES (ROBUST PARSING EVEN WHEN POLICY HAS ())
     '-------------------------------------------------------
-    Dim mainKeyToRow As Object: Set mainKeyToRow = CreateObject("Scripting.Dictionary")
-    Dim exactKeyExists As Object: Set exactKeyExists = CreateObject("Scripting.Dictionary")
-    BuildExistingIndexes wsTask, tTaskName, mainKeyToRow, exactKeyExists
+    Dim mainKeyToRow As Object: Set mainKeyToRow = CreateObject("Scripting.Dictionary")   ' entity|policy -> first row
+    Dim exactKeyExists As Object: Set exactKeyExists = CreateObject("Scripting.Dictionary") ' entity|policy|snippet -> exists
+    BuildExistingIndexesV2 wsTask, tTaskName, mainKeyToRow, exactKeyExists
 
     Dim nextDestRow As Long
     nextDestRow = wsTask.Cells(wsTask.Rows.Count, 1).End(xlUp).Row + 1
@@ -119,11 +130,11 @@ Public Sub Build_RemediationTasks_From_CleanIssueReport()
     End If
 
     lastCol = wsIssue.Cells(1, wsIssue.Columns.Count).End(xlToLeft).Column
+
     Dim arr As Variant
     arr = wsIssue.Range(wsIssue.Cells(1, 1), wsIssue.Cells(lastRow, lastCol)).Value2
 
-    Dim currentPol As String
-    currentPol = ""
+    Dim currentPol As String: currentPol = ""
 
     Dim r As Long
     For r = 2 To lastRow
@@ -141,6 +152,7 @@ Public Sub Build_RemediationTasks_From_CleanIssueReport()
         End If
         If Len(pol) = 0 Then GoTo NextR
 
+        ' ENTITY MUST COME FROM Systems Exhibiting the Issue
         Dim entRaw As String
         entRaw = CleanCellText(arr(r, cEnt))
         If Len(entRaw) = 0 Then GoTo NextR
@@ -171,35 +183,33 @@ Public Sub Build_RemediationTasks_From_CleanIssueReport()
             mainKey = NormalizeKey(entityDisplay) & "|" & NormalizeKey(pol)
             exactKey = mainKey & "|" & NormalizeKey(snippet)
 
-            ' Avoid duplicates across reruns
             If exactKeyExists.Exists(exactKey) Then GoTo NextEnt
             exactKeyExists.Add exactKey, True
 
             Dim destRow As Long, mainRow As Long
+
             If mainKeyToRow.Exists(mainKey) Then
                 mainRow = CLng(mainKeyToRow(mainKey))
 
-                ' If main row is empty (no plan/owner/due), reuse it
+                ' Reuse main row only if it is empty
                 If RowLooksEmpty(wsTask, mainRow, tDesc, tAssigned, tDue) Then
                     destRow = mainRow
                 Else
-                    ' Append an extra row for another issue under same entity+policy
                     destRow = nextDestRow
                     nextDestRow = nextDestRow + 1
 
-                    WriteTaskName wsTask, destRow, tTaskName, prefix, pol, entityDisplay, snippet
+                    WriteTaskNameV2 wsTask, destRow, tTaskName, prefix, pol, entityDisplay, snippet
                     ReplicateIssueId wsTask, mainRow, destRow, tIssueId
                 End If
+
             Else
-                ' First time we see this entity+policy: create new main row
                 destRow = nextDestRow
                 nextDestRow = nextDestRow + 1
 
                 mainKeyToRow.Add mainKey, destRow
-                WriteTaskName wsTask, destRow, tTaskName, prefix, pol, entityDisplay, snippet
+                WriteTaskNameV2 wsTask, destRow, tTaskName, prefix, pol, entityDisplay, snippet
             End If
 
-            ' Write fields. If blank, do not overwrite existing.
             If Len(planText) > 0 Then wsTask.Cells(destRow, tDesc).Value2 = planText
             If Len(ownerText) > 0 Then wsTask.Cells(destRow, tAssigned).Value2 = ownerText
             WriteDateSmart wsTask.Cells(destRow, tDue), dueVal
@@ -212,7 +222,7 @@ NextR:
     Next r
 
     wbTask.Save
-    MsgBox "Done ✅ Remediation tasks updated.", vbInformation
+    MsgBox "Done ✅ Remediation tasks updated. (Entity is pulled from Systems Exhibiting the Issue)", vbInformation
 
 CleanExit:
     On Error Resume Next
@@ -232,172 +242,128 @@ ErrHandler:
 
 End Sub
 
+
 '===========================================================
-' TASK NAME FORMATTER
-'   Example:
-'   DTS Sweep 2 - Access Control (17124 Bynder_Dan_Stout-Ryan_Patena) - access provisioning approvals
+' TASK NAME FORMATTER (ALWAYS ADDS ENTITY IN ())
 '===========================================================
-Private Sub WriteTaskName(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal colTaskName As Long, _
-                          ByVal prefix As String, ByVal policySub As String, ByVal entityName As String, ByVal snippet As String)
+Private Sub WriteTaskNameV2(ByVal ws As Worksheet, ByVal rowNum As Long, ByVal colTaskName As Long, _
+                            ByVal prefix As String, ByVal policySub As String, ByVal entityName As String, ByVal snippet As String)
 
     Dim t As String
     t = UCase$(Trim$(prefix)) & " Sweep 2 - " & policySub & " (" & entityName & ")"
     If Len(snippet) > 0 Then t = t & " - " & snippet
-
     ws.Cells(rowNum, colTaskName).Value2 = t
+
 End Sub
 
+
 '===========================================================
-' SNIPPETS THAT ACTUALLY MAKE SENSE (INTENT LABELS)
+' SNIPPETS (INTENT LABELS)
 '===========================================================
 Private Function SnippetFromQuestionIntent(ByVal q As String) As String
 
     Dim s As String
     s = LCase$(CleanCellText(q))
-    If Len(s) = 0 Then
-        SnippetFromQuestionIntent = ""
-        Exit Function
-    End If
+    If Len(s) = 0 Then SnippetFromQuestionIntent = "": Exit Function
 
-    ' Access provisioning and approvals
     If InStr(s, "access provisioning") > 0 Or (InStr(s, "formal access") > 0 And InStr(s, "approv") > 0) Then
-        SnippetFromQuestionIntent = "access provisioning approvals"
-        Exit Function
+        SnippetFromQuestionIntent = "access provisioning approvals": Exit Function
     End If
 
-    ' Deprovisioning on termination / job change
     If InStr(s, "disabled promptly") > 0 Or InStr(s, "upon notification of termination") > 0 Or _
        (InStr(s, "termination") > 0 And InStr(s, "disabled") > 0) Or InStr(s, "job responsibilities") > 0 Then
-        SnippetFromQuestionIntent = "deprovision access on termination"
-        Exit Function
+        SnippetFromQuestionIntent = "deprovision access on termination": Exit Function
     End If
 
-    ' Access recertification reviews
     If InStr(s, "recertification") > 0 Or InStr(s, "access recertification") > 0 Or InStr(s, "confirm access") > 0 Then
-        SnippetFromQuestionIntent = "periodic access recertification"
-        Exit Function
+        SnippetFromQuestionIntent = "periodic access recertification": Exit Function
     End If
 
-    ' Remove customer access
     If InStr(s, "removing the access of a customer") > 0 Or (InStr(s, "customer") > 0 And InStr(s, "remove") > 0) Then
-        SnippetFromQuestionIntent = "remove customer access"
-        Exit Function
+        SnippetFromQuestionIntent = "remove customer access": Exit Function
     End If
 
-    ' Service account management
     If InStr(s, "service account") > 0 And (InStr(s, "rotating") > 0 Or InStr(s, "password") > 0 Or InStr(s, "tracking") > 0) Then
-        SnippetFromQuestionIntent = "service account lifecycle"
-        Exit Function
+        SnippetFromQuestionIntent = "service account lifecycle": Exit Function
     End If
 
-    ' Service account owner
     If InStr(s, "service accounts") > 0 And InStr(s, "assigned an owner") > 0 Then
-        SnippetFromQuestionIntent = "service account owner assigned"
-        Exit Function
+        SnippetFromQuestionIntent = "service account owner assigned": Exit Function
     End If
 
-    ' Default accounts
     If InStr(s, "default accounts") > 0 Then
-        SnippetFromQuestionIntent = "secure default accounts"
-        Exit Function
+        SnippetFromQuestionIntent = "secure default accounts": Exit Function
     End If
 
-    ' Shared accounts (general)
-    If InStr(s, "shared accounts") > 0 And InStr(s, "customers") = 0 Then
-        SnippetFromQuestionIntent = "prohibit shared accounts"
-        Exit Function
-    End If
-
-    ' Shared accounts for customers
     If InStr(s, "shared accounts for customers") > 0 Then
-        SnippetFromQuestionIntent = "prohibit customer shared accounts"
-        Exit Function
+        SnippetFromQuestionIntent = "prohibit customer shared accounts": Exit Function
     End If
 
-    ' Temporary accounts disablement
+    If InStr(s, "shared accounts") > 0 Then
+        SnippetFromQuestionIntent = "prohibit shared accounts": Exit Function
+    End If
+
     If InStr(s, "temporary accounts") > 0 And (InStr(s, "disabled") > 0 Or InStr(s, "inactivity") > 0) Then
-        SnippetFromQuestionIntent = "disable temporary accounts"
-        Exit Function
+        SnippetFromQuestionIntent = "disable temporary accounts": Exit Function
     End If
 
-    ' Break glass accounts
     If InStr(s, "break glass") > 0 Then
-        SnippetFromQuestionIntent = "break glass password rotation"
-        Exit Function
+        SnippetFromQuestionIntent = "break glass password rotation": Exit Function
     End If
 
-    ' Privilege separation / least privilege
     If InStr(s, "separate and limit") > 0 Or InStr(s, "minimum required") > 0 Or InStr(s, "job responsibilities") > 0 Then
-        SnippetFromQuestionIntent = "least privilege roles"
-        Exit Function
+        SnippetFromQuestionIntent = "least privilege roles": Exit Function
     End If
 
-    ' Privileged admin accounts (separate admin)
     If InStr(s, "separate administrator accounts") > 0 Or InStr(s, "separate admin") > 0 Then
-        SnippetFromQuestionIntent = "separate admin accounts"
-        Exit Function
+        SnippetFromQuestionIntent = "separate admin accounts": Exit Function
     End If
 
-    ' PAM
     If InStr(s, "privileged access management") > 0 Or InStr(s, "pam") > 0 Then
-        SnippetFromQuestionIntent = "privileged access management"
-        Exit Function
+        SnippetFromQuestionIntent = "privileged access management": Exit Function
     End If
 
-    ' Encryption in transit
     If InStr(s, "encrypt") > 0 And InStr(s, "transit") > 0 Then
-        SnippetFromQuestionIntent = "encrypt data in transit"
-        Exit Function
+        SnippetFromQuestionIntent = "encrypt data in transit": Exit Function
     End If
 
-    ' Vulnerability scanning
     If InStr(s, "vulnerability") > 0 And InStr(s, "scan") > 0 Then
-        SnippetFromQuestionIntent = "vulnerability scanning"
-        Exit Function
+        SnippetFromQuestionIntent = "vulnerability scanning": Exit Function
     End If
 
-    ' Penetration testing
     If InStr(s, "penetration test") > 0 Then
-        SnippetFromQuestionIntent = "penetration testing"
-        Exit Function
+        SnippetFromQuestionIntent = "penetration testing": Exit Function
     End If
 
-    ' SAST/SCA
     If InStr(s, "static application security testing") > 0 Or InStr(s, "sast") > 0 Or InStr(s, "sca") > 0 Then
-        SnippetFromQuestionIntent = "sast or sca testing"
-        Exit Function
+        SnippetFromQuestionIntent = "sast or sca testing": Exit Function
     End If
 
-    ' Fallback: clean first clause up to "?"
-    Dim p As Long
-    p = InStr(1, q, "?", vbTextCompare)
-    If p > 8 Then
-        SnippetFromQuestionIntent = Trim$(Left$(q, p - 1))
-    Else
-        SnippetFromQuestionIntent = Trim$(Left$(q, 80))
-    End If
+    SnippetFromQuestionIntent = Left$(CleanCellText(q), 60)
 
 End Function
 
+
 '===========================================================
-' EXISTING INDEX BUILDER
+' EXISTING INDEXES (V2 PARSER)
+'   Works even when policy contains parentheses like:
+'   Access Control (administrators)
 '===========================================================
-Private Sub BuildExistingIndexes(ByVal ws As Worksheet, ByVal colTaskName As Long, _
-                                 ByVal mainKeyToRow As Object, ByVal exactKeyExists As Object)
+Private Sub BuildExistingIndexesV2(ByVal ws As Worksheet, ByVal colTaskName As Long, _
+                                   ByVal mainKeyToRow As Object, ByVal exactKeyExists As Object)
 
     Dim lastRow As Long, r As Long
     lastRow = ws.Cells(ws.Rows.Count, colTaskName).End(xlUp).Row
     If lastRow < 2 Then Exit Sub
 
     For r = 2 To lastRow
+
         Dim t As String
         t = CleanCellText(ws.Cells(r, colTaskName).Value2)
         If Len(t) = 0 Then GoTo NextR
 
         Dim pol As String, ent As String, snip As String
-        pol = ExtractPolicyFromTaskName(t)
-        ent = ExtractBetweenParens(t)
-        snip = ExtractSnippetFromTaskName(t)
+        ParseTaskNameV2 t, pol, ent, snip
 
         If Len(pol) = 0 Or Len(ent) = 0 Then GoTo NextR
 
@@ -412,59 +378,88 @@ NextR:
     Next r
 End Sub
 
-Private Function ExtractPolicyFromTaskName(ByVal t As String) As String
-    ' Expected: PREFIX Sweep 2 - POLICY (ENTITY) - SNIP
+Private Sub ParseTaskNameV2(ByVal t As String, ByRef polOut As String, ByRef entOut As String, ByRef snipOut As String)
+    ' Expected:
+    ' PREFIX Sweep 2 - POLICY (ENTITY) - SNIP
+    ' POLICY may itself contain parentheses, so ENTITY is taken from the LAST (...) group before the final " - SNIP".
+
+    polOut = "": entOut = "": snipOut = ""
+
     Dim p As Long
     p = InStr(1, t, "Sweep 2 -", vbTextCompare)
-    If p = 0 Then Exit Function
+    If p = 0 Then Exit Sub
 
     Dim afterDash As String
     afterDash = Mid$(t, p + Len("Sweep 2 -"))
+    afterDash = Trim$(afterDash)
 
-    Dim lp As Long
-    lp = InStr(1, afterDash, "(", vbTextCompare)
-    If lp = 0 Then Exit Function
+    Dim lastClose As Long
+    lastClose = InStrRev(afterDash, ")")
+    If lastClose = 0 Then Exit Sub
 
-    ExtractPolicyFromTaskName = Trim$(Left$(afterDash, lp - 1))
+    Dim lastOpen As Long
+    lastOpen = InStrRev(Left$(afterDash, lastClose), "(")
+    If lastOpen = 0 Then Exit Sub
+
+    polOut = Trim$(Left$(afterDash, lastOpen - 1))
+    entOut = Trim$(Mid$(afterDash, lastOpen + 1, lastClose - lastOpen - 1))
+
+    Dim rest As String
+    rest = Trim$(Mid$(afterDash, lastClose + 1))
+
+    If Left$(rest, 1) = "-" Then rest = Trim$(Mid$(rest, 2))
+    If Left$(rest, 1) = "-" Then rest = Trim$(Mid$(rest, 2))
+
+    snipOut = rest
+End Sub
+
+
+'===========================================================
+' HELPERS
+'===========================================================
+Private Function RowLooksEmpty(ByVal ws As Worksheet, ByVal r As Long, ByVal cDesc As Long, ByVal cOwner As Long, ByVal cDue As Long) As Boolean
+    Dim a As String, b As String
+    a = CleanCellText(ws.Cells(r, cDesc).Value2)
+    b = CleanCellText(ws.Cells(r, cOwner).Value2)
+
+    If Len(a) > 0 Then RowLooksEmpty = False: Exit Function
+    If Len(b) > 0 Then RowLooksEmpty = False: Exit Function
+
+    If IsDate(ws.Cells(r, cDue).Value2) Then RowLooksEmpty = False: Exit Function
+    If Len(CleanCellText(ws.Cells(r, cDue).Value2)) > 0 Then RowLooksEmpty = False: Exit Function
+
+    RowLooksEmpty = True
 End Function
 
-Private Function ExtractBetweenParens(ByVal t As String) As String
-    Dim lp As Long, rp As Long
-    lp = InStr(1, t, "(", vbTextCompare)
-    If lp = 0 Then Exit Function
-    rp = InStr(lp + 1, t, ")", vbTextCompare)
-    If rp = 0 Then Exit Function
-    ExtractBetweenParens = Trim$(Mid$(t, lp + 1, rp - lp - 1))
-End Function
+Private Sub ReplicateIssueId(ByVal ws As Worksheet, ByVal mainRow As Long, ByVal newRow As Long, ByVal colIssueId As Long)
+    If colIssueId <= 0 Then Exit Sub
+    Dim v As String
+    v = CleanCellText(ws.Cells(mainRow, colIssueId).Value2)
+    If Len(v) > 0 Then ws.Cells(newRow, colIssueId).Value2 = v
+End Sub
 
-Private Function ExtractSnippetFromTaskName(ByVal t As String) As String
-    Dim rp As Long
-    rp = InStrRev(t, ")")
-    If rp = 0 Then Exit Function
-
-    Dim dashPos As Long
-    dashPos = InStr(rp + 1, t, " - ", vbTextCompare)
-    If dashPos = 0 Then
-        ExtractSnippetFromTaskName = ""
-    Else
-        ExtractSnippetFromTaskName = Trim$(Mid$(t, dashPos + 3))
+Private Sub WriteDateSmart(ByVal targetCell As Range, ByVal v As Variant)
+    On Error Resume Next
+    If IsDate(v) Then
+        targetCell.Value = CDate(v)
+        Exit Sub
     End If
-End Function
+    Dim s As String
+    s = CleanCellText(v)
+    If Len(s) = 0 Then Exit Sub
+    If IsDate(s) Then
+        targetCell.Value = CDate(s)
+    Else
+        targetCell.Value = s
+    End If
+End Sub
 
-'===========================================================
-' ENTITY SPLITTER
-'   Handles:
-'   - newline-separated
-'   - comma-separated
-'===========================================================
 Private Function SplitEntities(ByVal s As String) As Collection
     Dim c As New Collection
     Dim t As String
     t = CleanCellText(s)
 
-    If InStr(t, vbLf) > 0 Or InStr(t, vbCr) > 0 Then
-        t = Replace(t, vbCr, vbLf)
-    End If
+    t = Replace(t, vbCr, vbLf)
 
     Dim parts As Variant, i As Long
     If InStr(t, vbLf) > 0 Then
@@ -486,104 +481,6 @@ Private Function SplitEntities(ByVal s As String) As Collection
     Set SplitEntities = c
 End Function
 
-'===========================================================
-' ISSUE ID REPLICATION FOR EXTRA ROWS
-'===========================================================
-Private Sub ReplicateIssueId(ByVal ws As Worksheet, ByVal mainRow As Long, ByVal newRow As Long, ByVal colIssueId As Long)
-    If colIssueId <= 0 Then Exit Sub
-    Dim v As String
-    v = CleanCellText(ws.Cells(mainRow, colIssueId).Value2)
-    If Len(v) > 0 Then ws.Cells(newRow, colIssueId).Value2 = v
-End Sub
-
-'===========================================================
-' EMPTY ROW CHECK (so we can reuse main row if blank)
-'===========================================================
-Private Function RowLooksEmpty(ByVal ws As Worksheet, ByVal r As Long, ByVal cDesc As Long, ByVal cOwner As Long, ByVal cDue As Long) As Boolean
-    Dim a As String, b As String
-    a = CleanCellText(ws.Cells(r, cDesc).Value2)
-    b = CleanCellText(ws.Cells(r, cOwner).Value2)
-
-    If Len(a) > 0 Then RowLooksEmpty = False: Exit Function
-    If Len(b) > 0 Then RowLooksEmpty = False: Exit Function
-    If IsDate(ws.Cells(r, cDue).Value2) Then RowLooksEmpty = False: Exit Function
-    If Len(CleanCellText(ws.Cells(r, cDue).Value2)) > 0 Then RowLooksEmpty = False: Exit Function
-
-    RowLooksEmpty = True
-End Function
-
-'===========================================================
-' DATE WRITER (SMART)
-'===========================================================
-Private Sub WriteDateSmart(ByVal targetCell As Range, ByVal v As Variant)
-    On Error Resume Next
-    If IsDate(v) Then
-        targetCell.Value = CDate(v)
-        Exit Sub
-    End If
-
-    Dim s As String
-    s = CleanCellText(v)
-    If Len(s) = 0 Then Exit Sub
-
-    If IsDate(s) Then
-        targetCell.Value = CDate(s)
-    Else
-        targetCell.Value = s
-    End If
-End Sub
-
-'===========================================================
-' PREFIX DETECTION
-'===========================================================
-Private Function ExtractPrefixFromFilename(ByVal fullPath As String) As String
-    Dim fn As String
-    fn = Mid$(fullPath, InStrRev(fullPath, "\") + 1)
-
-    Dim base As String
-    base = fn
-    If InStrRev(base, ".") > 0 Then base = Left$(base, InStrRev(base, ".") - 1)
-
-    ' Try to take leading token before "_" or "-"
-    Dim tok As String
-    If InStr(base, "_") > 0 Then
-        tok = Split(base, "_")(0)
-    ElseIf InStr(base, "-") > 0 Then
-        tok = Split(base, "-")(0)
-    Else
-        tok = base
-    End If
-
-    tok = Trim$(tok)
-    ' Keep it sane, usually 2-6 letters like DTS/EPD/AN
-    If Len(tok) >= 2 And Len(tok) <= 10 Then
-        ExtractPrefixFromFilename = UCase$(tok)
-    Else
-        ExtractPrefixFromFilename = ""
-    End If
-End Function
-
-Private Function DetectPrefixFromTasks(ByVal ws As Worksheet, ByVal colTaskName As Long) As String
-    Dim lastRow As Long, r As Long
-    lastRow = ws.Cells(ws.Rows.Count, colTaskName).End(xlUp).Row
-    For r = 2 To Application.Min(lastRow, 50)
-        Dim t As String
-        t = CleanCellText(ws.Cells(r, colTaskName).Value2)
-        If InStr(1, t, "Sweep 2 -", vbTextCompare) > 0 Then
-            Dim p As Long
-            p = InStr(1, t, "Sweep 2 -", vbTextCompare)
-            DetectPrefixFromTasks = Trim$(Left$(t, p - 1))
-            DetectPrefixFromTasks = Replace(DetectPrefixFromTasks, "  ", " ")
-            DetectPrefixFromTasks = UCase$(Trim$(DetectPrefixFromTasks))
-            Exit Function
-        End If
-    Next r
-    DetectPrefixFromTasks = ""
-End Function
-
-'===========================================================
-' FUZZY HEADER HELPERS
-'===========================================================
 Private Function FindSheetByHeaderFuzzy(ByVal wb As Workbook, ByVal headerText As String) As Worksheet
     Dim ws As Worksheet
     For Each ws In wb.Worksheets
@@ -595,8 +492,25 @@ Private Function FindSheetByHeaderFuzzy(ByVal wb As Workbook, ByVal headerText A
     Set FindSheetByHeaderFuzzy = Nothing
 End Function
 
-Private Function FindHeaderColFuzzy(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerText As String) As Long
+Private Function FindHeaderColStrict(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerText As String) As Long
+    Dim want As String
+    want = NormHdr(headerText)
 
+    Dim lastCol As Long, c As Long
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        Dim got As String
+        got = NormHdr(CStr(ws.Cells(headerRow, c).Value2))
+        If got = want Then
+            FindHeaderColStrict = c
+            Exit Function
+        End If
+    Next c
+    FindHeaderColStrict = 0
+End Function
+
+Private Function FindHeaderColFuzzy(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerText As String) As Long
     Dim want As String
     want = NormHdr(headerText)
 
@@ -613,7 +527,6 @@ Private Function FindHeaderColFuzzy(ByVal ws As Worksheet, ByVal headerRow As Lo
             End If
         End If
     Next c
-
     FindHeaderColFuzzy = 0
 End Function
 
@@ -650,9 +563,6 @@ Private Function ListHeaders(ByVal ws As Worksheet, ByVal headerRow As Long) As 
     ListHeaders = out
 End Function
 
-'===========================================================
-' TEXT NORMALIZERS
-'===========================================================
 Private Function CleanCellText(ByVal v As Variant) As String
     Dim s As String
     s = CStr(v)
@@ -676,9 +586,35 @@ Private Function NormalizeKey(ByVal s As String) As String
     NormalizeKey = Trim$(s)
 End Function
 
-'===========================================================
-' FILE PICKER
-'===========================================================
+Private Function DetectPrefixFromFilenameSmart(ByVal fullPath As String) As String
+    Dim fn As String
+    fn = Mid$(fullPath, InStrRev(fullPath, "\") + 1)
+    fn = UCase$(fn)
+
+    ' Prefer known tokens anywhere in filename
+    If InStr(fn, "DTS") > 0 Then DetectPrefixFromFilenameSmart = "DTS": Exit Function
+    If InStr(fn, "EPD") > 0 Then DetectPrefixFromFilenameSmart = "EPD": Exit Function
+    If InStr(fn, "AN") > 0 Then DetectPrefixFromFilenameSmart = "AN": Exit Function
+
+    DetectPrefixFromFilenameSmart = ""
+End Function
+
+Private Function DetectPrefixFromTasks(ByVal ws As Worksheet, ByVal colTaskName As Long) As String
+    Dim lastRow As Long, r As Long
+    lastRow = ws.Cells(ws.Rows.Count, colTaskName).End(xlUp).Row
+    For r = 2 To Application.Min(lastRow, 200)
+        Dim t As String
+        t = CleanCellText(ws.Cells(r, colTaskName).Value2)
+        If InStr(1, t, "Sweep 2 -", vbTextCompare) > 0 Then
+            Dim p As Long
+            p = InStr(1, t, "Sweep 2 -", vbTextCompare)
+            DetectPrefixFromTasks = UCase$(Trim$(Left$(t, p - 1)))
+            Exit Function
+        End If
+    Next r
+    DetectPrefixFromTasks = ""
+End Function
+
 Private Function PickExcelFile(ByVal prompt As String) As String
     Dim fd As FileDialog
     Set fd = Application.FileDialog(msoFileDialogFilePicker)
