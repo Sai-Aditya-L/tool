@@ -23,12 +23,10 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2()
     Set wbD = Workbooks.Open(CStr(dstPath))
 
     'Find destination sheet by header "Remediation Task Name"
-    Set wsD = FindSheetByHeader(wbD, "Remediation Task Name", 300)
-    If wsD Is Nothing Then
-        Set wsD = wbD.Worksheets(1)
-    End If
+    Set wsD = FindSheetByHeader(wbD, "Remediation Task Name", 400)
+    If wsD Is Nothing Then Set wsD = wbD.Worksheets(1)
 
-    'Pick consolidated Issue Report file
+    'Pick Issue Report file
     srcPath = Application.GetOpenFilename("Excel Files (*.xlsx;*.xlsm), *.xlsx;*.xlsm", , _
                                          "Select Issue Report file")
     If srcPath = False Then GoTo CleanExit
@@ -55,10 +53,10 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2()
     Dim hdrRowD As Long
     Dim colTaskName As Long, colIssueId As Long, colDesc As Long, colAssigned As Long, colDue As Long
 
-    hdrRowD = FindHeaderRowExact(wsD, Array("Remediation Task Name", "Issue Id"), 400)
+    hdrRowD = FindHeaderRowExact(wsD, Array("Remediation Task Name", "Issue Id"), 600)
     If hdrRowD = 0 Then
-        MsgBox "Could not find required headers in Remediation Task sheet (need at least 'Remediation Task Name' and 'Issue Id').", vbCritical
-        LogEvent wsLog, "ERROR", "", "", "", "Missing headers in destination."
+        MsgBox "Could not find required headers in destination sheet (need 'Remediation Task Name' and 'Issue Id').", vbCritical
+        LogEvent wsLog, "ERROR", "", "", "", "Missing destination headers."
         GoTo CleanExit
     End If
 
@@ -73,7 +71,6 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2()
         GoTo CleanExit
     End If
 
-    'Format
     wsD.Columns(colTaskName).NumberFormat = "@"
     wsD.Columns(colIssueId).NumberFormat = "@"
     If colDesc > 0 Then wsD.Columns(colDesc).NumberFormat = "@"
@@ -81,13 +78,13 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2()
     If colDue > 0 Then wsD.Columns(colDue).NumberFormat = "m/d/yyyy"
 
     '============================================================
-    ' SOURCE HEADERS (KEYWORD BASED)
+    ' SOURCE HEADERS
     '============================================================
     Dim hdrRowS As Long
     Dim colPolSub As Long, colSystems As Long, colQID As Long
     Dim colOrigQ As Long, colPlan As Long, colOwner As Long, colCompDate As Long
 
-    hdrRowS = FindSourceHeaderRow(wsS, 800)
+    hdrRowS = FindSourceHeaderRow(wsS, 1200)
     If hdrRowS = 0 Then
         MsgBox "Could not find source header row in Issue Report Listing2.", vbCritical
         LogEvent wsLog, "ERROR", "", "", "", "Missing source headers."
@@ -99,7 +96,6 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2()
     colQID = FindColByKeywords(wsS, hdrRowS, Array("question", "id"))
     colOrigQ = FindColByKeywords(wsS, hdrRowS, Array("original", "question"))
 
-    'Remediation Plan can be "Remediation Plan" OR "Suggested Remediation"
     colPlan = FindColByKeywords(wsS, hdrRowS, Array("remediation", "plan"))
     If colPlan = 0 Then colPlan = FindColByKeywords(wsS, hdrRowS, Array("suggested", "remediation"))
 
@@ -115,17 +111,15 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2()
     End If
 
     '============================================================
-    ' BUILD DEST INDEXES + LEARN PREFIX (MOST COMMON)
+    ' BUILD DEST INDEXES + PREFIX
     '============================================================
-    Dim existingMain As Object, existingIssue As Object
-    Dim entityPrefix As Object
+    Dim existingMain As Object, existingIssue As Object, entityPrefix As Object
     Set existingMain = CreateObject("Scripting.Dictionary")
     Set existingIssue = CreateObject("Scripting.Dictionary")
     Set entityPrefix = CreateObject("Scripting.Dictionary")
 
     Dim globalPrefix As String
     globalPrefix = ""
-
     BuildDestIndexes_MostCommonPrefix wsD, hdrRowD, colTaskName, existingMain, existingIssue, entityPrefix, globalPrefix
     If Len(globalPrefix) = 0 Then globalPrefix = "DTS Sweep 2 - "
 
@@ -133,44 +127,55 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2()
     ' PROCESS SOURCE ROWS
     '============================================================
     Dim lastRowS As Long, r As Long
-    lastRowS = wsS.Cells(wsS.Rows.Count, colPolSub).End(xlUp).Row
+    lastRowS = wsS.UsedRange.Rows(wsS.UsedRange.Rows.Count).Row
 
-    Dim seenMainInRun As Object
+    Dim seenMainInRun As Object, snippetCounts As Object
     Set seenMainInRun = CreateObject("Scripting.Dictionary")
-
-    Dim snippetCounts As Object
     Set snippetCounts = CreateObject("Scripting.Dictionary")
 
+    Dim cntTotal As Long, cntSkipped As Long, cntEntities As Long, cntWritten As Long
+    cntTotal = 0: cntSkipped = 0: cntEntities = 0: cntWritten = 0
+
     For r = hdrRowS + 1 To lastRowS
+        cntTotal = cntTotal + 1
 
         Dim qid As String
-        qid = Trim$(CStr(wsS.Cells(r, colQID).Value))
+        qid = Trim$(CStr(GetValueFillDown(wsS, r, colQID, hdrRowS)))
+        If ShouldSkipQuestionId(qid) Then
+            cntSkipped = cntSkipped + 1
+            GoTo NextRow
+        End If
 
-        'Skip only Summary or N/A variants. DO NOT skip blanks.
-        If ShouldSkipQuestionId(qid) Then GoTo NextRow
-
+        'FILL-DOWN READS (critical for merged/grouped sheets)
         Dim pol As String
-        pol = Trim$(CStr(wsS.Cells(r, colPolSub).Value))
-        If Len(pol) = 0 Then GoTo NextRow
+        pol = Trim$(CStr(GetValueFillDown(wsS, r, colPolSub, hdrRowS)))
+        If Len(pol) = 0 Then
+            cntSkipped = cntSkipped + 1
+            GoTo NextRow
+        End If
         pol = CanonicalPolicySubDomain(pol)
 
         Dim systemsRaw As String
-        systemsRaw = Trim$(CStr(wsS.Cells(r, colSystems).Value))
-        If Len(systemsRaw) = 0 Then GoTo NextRow
+        systemsRaw = Trim$(CStr(GetValueFillDown(wsS, r, colSystems, hdrRowS)))
+        If Len(systemsRaw) = 0 Then
+            cntSkipped = cntSkipped + 1
+            GoTo NextRow
+        End If
 
         Dim entities As Collection
         Set entities = ParseEntities(systemsRaw)
-        If entities.Count = 0 Then GoTo NextRow
+        If entities.Count = 0 Then
+            cntSkipped = cntSkipped + 1
+            GoTo NextRow
+        End If
 
-        Dim planText As String, ownerText As String
+        Dim planText As String, ownerText As String, qText As String
         Dim dueVal As Variant
 
-        planText = Trim$(CStr(wsS.Cells(r, colPlan).Value))
-        ownerText = Trim$(CStr(wsS.Cells(r, colOwner).Value))
-        dueVal = wsS.Cells(r, colCompDate).Value
-
-        Dim qText As String
-        qText = Trim$(CStr(wsS.Cells(r, colOrigQ).Value))
+        planText = Trim$(CStr(GetValueFillDown(wsS, r, colPlan, hdrRowS)))    'keep blanks allowed
+        ownerText = Trim$(CStr(GetValueFillDown(wsS, r, colOwner, hdrRowS)))  'keep blanks allowed
+        dueVal = GetValueFillDown(wsS, r, colCompDate, hdrRowS)
+        qText = Trim$(CStr(GetValueFillDown(wsS, r, colOrigQ, hdrRowS)))      'keep blanks allowed
 
         Dim snip As String
         snip = SnippetFromQuestion(qText)
@@ -178,6 +183,7 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2()
 
         Dim e As Variant
         For Each e In entities
+            cntEntities = cntEntities + 1
 
             Dim entityDisplay As String, entityKey As String
             entityDisplay = CStr(e)
@@ -196,14 +202,14 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2()
 
             If Not seenMainInRun.Exists(keyMain) Then
                 seenMainInRun.Add keyMain, True
-
                 UpsertMainRow wsD, hdrRowD, colTaskName, colIssueId, colDesc, colAssigned, colDue, _
                              existingMain, keyMain, prefixText, pol, entityDisplay, _
                              planText, ownerText, dueVal, wsLog
+                cntWritten = cntWritten + 1
             Else
                 Dim uniqSnip As String, snipBaseKey As String
-
                 snipBaseKey = keyMain & "||" & NormalizeKey(snip)
+
                 If snippetCounts.Exists(snipBaseKey) Then
                     snippetCounts(snipBaseKey) = CLng(snippetCounts(snipBaseKey)) + 1
                     uniqSnip = snip & " " & CStr(snippetCounts(snipBaseKey))
@@ -216,6 +222,7 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2()
                                existingMain, existingIssue, keyMain, NormalizeKey(uniqSnip), _
                                prefixText, pol, entityDisplay, uniqSnip, _
                                planText, ownerText, dueVal, wsLog
+                cntWritten = cntWritten + 1
             End If
 
 NextEntity:
@@ -224,8 +231,15 @@ NextEntity:
 NextRow:
     Next r
 
+    LogEvent wsLog, "INFO", "", "", "", "Rows scanned: " & cntTotal & _
+                                        " | Skipped: " & cntSkipped & _
+                                        " | Entities processed: " & cntEntities & _
+                                        " | Rows written: " & cntWritten
+
     LogEvent wsLog, "INFO", "", "", "", "Run complete."
-    MsgBox "Done! Imported from Issue Report Listing2. (No auto-save: please save the destination workbook manually.)", vbInformation
+    MsgBox "Done! Rows written: " & cntWritten & vbCrLf & _
+           "Check 'Run Log' for totals and any skip patterns." & vbCrLf & _
+           "(No auto-save: please save destination workbook manually.)", vbInformation
 
 CleanExit:
     On Error Resume Next
@@ -237,6 +251,37 @@ CleanExit:
     Application.Calculation = xlCalculationAutomatic
 
 End Sub
+
+'============================================================
+' FILL-DOWN / MERGE-SAFE VALUE READ
+'============================================================
+Private Function GetValueFillDown(ByVal ws As Worksheet, ByVal r As Long, ByVal c As Long, ByVal hdrRow As Long) As Variant
+    Dim v As Variant
+    v = GetMergedValue(ws.Cells(r, c))
+    If Len(Trim$(CStr(v))) > 0 Then
+        GetValueFillDown = v
+        Exit Function
+    End If
+
+    Dim rr As Long
+    For rr = r - 1 To hdrRow + 1 Step -1
+        v = GetMergedValue(ws.Cells(rr, c))
+        If Len(Trim$(CStr(v))) > 0 Then
+            GetValueFillDown = v
+            Exit Function
+        End If
+    Next rr
+
+    GetValueFillDown = ""
+End Function
+
+Private Function GetMergedValue(ByVal cell As Range) As Variant
+    If cell.MergeCells Then
+        GetMergedValue = cell.MergeArea.Cells(1, 1).Value
+    Else
+        GetMergedValue = cell.Value
+    End If
+End Function
 
 '============================================================
 ' UPSERTS
@@ -307,16 +352,14 @@ Private Sub UpsertIssueRow(ByVal wsD As Worksheet, ByVal hdrRowD As Long, _
 End Sub
 
 '============================================================
-' QUESTION ID SKIP RULES (DO NOT SKIP BLANKS)
+' SKIP RULES
 '============================================================
 Private Function ShouldSkipQuestionId(ByVal qid As String) As Boolean
     Dim t As String
     t = LCase$(Trim$(qid))
-
     t = Replace(t, " ", "")
     t = Replace(t, ".", "")
 
-    'Skip only Summary or NA/N/A variants
     If t = "summary" Then
         ShouldSkipQuestionId = True
     ElseIf t = "na" Or t = "n/a" Or t = "n\a" Then
@@ -334,8 +377,7 @@ Private Function FindSourceHeaderRow(ByVal ws As Worksheet, ByVal maxRowsToScan 
     For r = 1 To maxRowsToScan
         If FindColByKeywords(ws, r, Array("policy", "sub", "domain")) > 0 _
            And FindColByKeywords(ws, r, Array("systems", "exhibiting", "issue")) > 0 _
-           And FindColByKeywords(ws, r, Array("question", "id")) > 0 _
-           And FindColByKeywords(ws, r, Array("original", "question")) > 0 Then
+           And FindColByKeywords(ws, r, Array("question", "id")) > 0 Then
             FindSourceHeaderRow = r
             Exit Function
         End If
@@ -437,7 +479,6 @@ Private Sub BuildDestIndexes_MostCommonPrefix(ByVal wsD As Worksheet, ByVal hdrR
     lastRow = wsD.Cells(wsD.Rows.Count, colTaskName).End(xlUp).Row
 
     For r = hdrRowD + 1 To lastRow
-
         Dim t As String
         t = Trim$(CStr(wsD.Cells(r, colTaskName).Value))
         If Len(t) = 0 Then GoTo NextR
@@ -474,7 +515,6 @@ Private Sub BuildDestIndexes_MostCommonPrefix(ByVal wsD As Worksheet, ByVal hdrR
                 If Not existingIssue.Exists(keyIssue) Then existingIssue.Add keyIssue, r
             End If
         End If
-
 NextR:
     Next r
 
@@ -520,7 +560,7 @@ Private Function ParseEntities(ByVal raw As String) As Collection
 End Function
 
 '============================================================
-' POLICY SUBDOMAIN NORMALIZATION (ALIASES)
+' POLICY SUBDOMAIN ALIASES
 '============================================================
 Private Function CanonicalPolicySubDomain(ByVal pol As String) As String
     Dim t As String
@@ -534,75 +574,46 @@ Private Function CanonicalPolicySubDomain(ByVal pol As String) As String
             CanonicalPolicySubDomain = "Multifactor Authentication"
         Case LCase$("Protection of Systems and Communications")
             CanonicalPolicySubDomain = "Protection of System and Communications"
-        Case Else
+        Else
             CanonicalPolicySubDomain = t
     End Select
 End Function
 
 '============================================================
-' SNIPPET FROM ORIGINAL QUESTION (PATTERN-BASED, MEANINGFUL)
+' SNIPPET (PATTERN-BASED)
 '============================================================
 Private Function SnippetFromQuestion(ByVal q As String) As String
     Dim t As String
     t = LCase$(Trim$(q))
-    If Len(t) = 0 Then
-        SnippetFromQuestion = ""
-        Exit Function
-    End If
+    If Len(t) = 0 Then SnippetFromQuestion = "": Exit Function
 
-    'Access control patterns
-    If InStr(t, "formal access provisioning") > 0 Or InStr(t, "access provisioning process") > 0 Then
+    If InStr(t, "access provisioning") > 0 Then
         SnippetFromQuestion = "Access provisioning approvals"
-    ElseIf InStr(t, "disabled promptly") > 0 Or InStr(t, "upon notification of termination") > 0 Then
+    ElseIf InStr(t, "disabled promptly") > 0 Or InStr(t, "termination") > 0 Then
         SnippetFromQuestion = "Deprovision on termination"
-    ElseIf InStr(t, "periodic access recertification") > 0 Or InStr(t, "recertification review") > 0 Then
+    ElseIf InStr(t, "recertification") > 0 Then
         SnippetFromQuestion = "Access recertification review"
-    ElseIf InStr(t, "prohibit the use of shared accounts") > 0 Then
+    ElseIf InStr(t, "shared accounts") > 0 Then
         SnippetFromQuestion = "Prohibit shared accounts"
-    ElseIf InStr(t, "temporary accounts") > 0 And (InStr(t, "30 days") > 0 Or InStr(t, "31 days") > 0) Then
+    ElseIf InStr(t, "temporary accounts") > 0 Then
         SnippetFromQuestion = "Temporary account expiry"
     ElseIf InStr(t, "break glass") > 0 Then
         SnippetFromQuestion = "Break-glass password rotation"
-    ElseIf InStr(t, "service accounts") > 0 And InStr(t, "manage service accounts") > 0 Then
+    ElseIf InStr(t, "service accounts") > 0 Then
         SnippetFromQuestion = "Service account management"
-    ElseIf InStr(t, "service accounts assigned an owner") > 0 Then
-        SnippetFromQuestion = "Service account ownership"
     ElseIf InStr(t, "default accounts") > 0 Then
         SnippetFromQuestion = "Default account hardening"
-    ElseIf InStr(t, "separate administrator accounts") > 0 Or InStr(t, "separate admin account") > 0 Then
-        SnippetFromQuestion = "Separate admin accounts"
-    ElseIf InStr(t, "privileged access management") > 0 Or InStr(t, "(pam)") > 0 Then
-        SnippetFromQuestion = "Privileged access management"
-
-    'Vulnerability / testing
-    ElseIf InStr(t, "static application security testing") > 0 Or InStr(t, "(sast)") > 0 Then
-        SnippetFromQuestion = "SAST/SCA during development"
     ElseIf InStr(t, "penetration test") > 0 Then
         SnippetFromQuestion = "Penetration testing cadence"
-    ElseIf InStr(t, "web app vulnerability scans") > 0 Then
-        SnippetFromQuestion = "Web app vulnerability scanning"
-    ElseIf InStr(t, "network vulnerability scans") > 0 Then
-        SnippetFromQuestion = "Network vulnerability scanning"
-    ElseIf InStr(t, "remediate vulnerabilities") > 0 And InStr(t, "severity") > 0 Then
-        SnippetFromQuestion = "Vulnerability remediation SLAs"
-
-    'Crypto / in-transit
-    ElseIf InStr(t, "encrypt data in transit") > 0 Or InStr(t, "tls") > 0 Then
+    ElseIf InStr(t, "vulnerability scans") > 0 Then
+        SnippetFromQuestion = "Vulnerability scanning cadence"
+    ElseIf InStr(t, "encrypt") > 0 Or InStr(t, "tls") > 0 Then
         SnippetFromQuestion = "Encrypt data in transit"
-    ElseIf InStr(t, "cryptographic keys") > 0 And InStr(t, "rotation") > 0 Then
-        SnippetFromQuestion = "Crypto key lifecycle"
-
-    'Authentication sessions / concurrency
-    ElseIf InStr(t, "multiple concurrent logins") > 0 Then
-        SnippetFromQuestion = "Block concurrent logins"
-    ElseIf InStr(t, "sessions that have been inactive") > 0 Then
+    ElseIf InStr(t, "sessions") > 0 And InStr(t, "inactive") > 0 Then
         SnippetFromQuestion = "Session inactivity timeout"
-    ElseIf InStr(t, "timeout after eight hours") > 0 Or InStr(t, "maximum life") > 0 Then
-        SnippetFromQuestion = "Session max lifetime"
-    ElseIf InStr(t, "unique accounts") > 0 Then
-        SnippetFromQuestion = "Unique user accounts"
+    ElseIf InStr(t, "concurrent logins") > 0 Then
+        SnippetFromQuestion = "Block concurrent logins"
     Else
-        'Fallback: short cleaned phrase (first meaningful chunk)
         SnippetFromQuestion = FallbackSnippet(q, 4)
     End If
 End Function
@@ -624,6 +635,7 @@ Private Function FallbackSnippet(ByVal q As String, ByVal maxWords As Long) As S
         Dim w As String
         w = Trim$(arr(i))
         If Len(w) = 0 Then GoTo NextI
+
         w = Replace(w, "?", "")
         w = Replace(w, ".", "")
         w = Replace(w, ",", "")
@@ -633,7 +645,10 @@ Private Function FallbackSnippet(ByVal q As String, ByVal maxWords As Long) As S
         w = Replace(w, ")", "")
 
         If Len(w) <= 2 Then GoTo NextI
-        If LCase$(w) = "the" Or LCase$(w) = "and" Or LCase$(w) = "to" Or LCase$(w) = "of" Or LCase$(w) = "in" Or LCase$(w) = "for" Then GoTo NextI
+        Select Case LCase$(w)
+            Case "the", "and", "to", "of", "in", "for", "with", "are", "is", "do", "does", "you"
+                GoTo NextI
+        End Select
 
         cnt = cnt + 1
         If out = "" Then out = w Else out = out & " " & w
@@ -659,8 +674,7 @@ Private Function ExtractBetweenParens(ByVal s As String) As String
 End Function
 
 Private Function ExtractPolicySubDomainFromTaskName(ByVal s As String) As String
-    Dim lowerS As String
-    lowerS = LCase$(s)
+    Dim lowerS As String: lowerS = LCase$(s)
 
     Dim pSweep As Long: pSweep = InStr(1, lowerS, "sweep", vbTextCompare)
     If pSweep = 0 Then ExtractPolicySubDomainFromTaskName = "": Exit Function
@@ -689,8 +703,7 @@ Private Function ExtractPolicySubDomainFromTaskName(ByVal s As String) As String
 End Function
 
 Private Function ExtractPrefixUpToSweep2Dash(ByVal s As String) As String
-    Dim lowerS As String
-    lowerS = LCase$(s)
+    Dim lowerS As String: lowerS = LCase$(s)
 
     Dim pSweep As Long: pSweep = InStr(1, lowerS, "sweep", vbTextCompare)
     If pSweep = 0 Then ExtractPrefixUpToSweep2Dash = "": Exit Function
@@ -799,3 +812,19 @@ Private Sub LogEvent(ByVal wsLog As Worksheet, ByVal status As String, ByVal ent
     wsLog.Cells(nextRow, 4).Value = policySub
     wsLog.Cells(nextRow, 5).Value = message
 End Sub
+
+'============================================================
+' EXTRA: DEST SHEET FINDER
+'============================================================
+Private Function FindSheetByHeader(ByVal wb As Workbook, ByVal headerText As String, ByVal maxRows As Long) As Worksheet
+    Dim ws As Worksheet, r As Long
+    For Each ws In wb.Worksheets
+        For r = 1 To maxRows
+            If FindHeaderColumnLoose(ws, r, LCase$(headerText)) > 0 Then
+                Set FindSheetByHeader = ws
+                Exit Function
+            End If
+        Next r
+    Next ws
+    Set FindSheetByHeader = Nothing
+End Function
