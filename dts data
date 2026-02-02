@@ -1,26 +1,13 @@
 Option Explicit
 
-'==========================================================
-' NEW FORMAT VERSION (Single consolidated Issue Report file)
-' Source sheet name: CleanIssueReport
-'
-' - Use Policy Sub-Domain + each Entity in "Systems Exhibiting the Issue"
-' - Skip rows where Question ID = "Summary" (case-insensitive)
-' - Create main row per (Entity + Policy Sub-Domain)
-' - Create extra rows for additional issues per same (Entity + Policy Sub-Domain),
-'   using snippet from Original Question:
-'      "<PREFIX><Policy Sub-Domain> (<Entity>) - <snippet>"
-' - Bring:
-'     Remediation Plan -> Description
-'     Remediation Owner -> Assigned to
-'     Planned Remediation Completion Date -> Due Date
-' - NO Column S ignore logic
-'==========================================================
-
+'============================================================
+' MAIN
+'============================================================
 Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
 
     Dim dstPath As Variant, srcPath As Variant
-    Dim wbD As Workbook, wsD As Worksheet, wbS As Workbook, wsS As Worksheet
+    Dim wbD As Workbook, wsD As Worksheet
+    Dim wbS As Workbook, wsS As Worksheet
     Dim wsLog As Worksheet
 
     Application.ScreenUpdating = False
@@ -32,7 +19,7 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
     If dstPath = False Then GoTo CleanExit
 
     Set wbD = Workbooks.Open(CStr(dstPath))
-    Set wsD = Nothing
+
     On Error Resume Next
     Set wsD = wbD.Worksheets("Sweep 2 Remediation Tasks")
     On Error GoTo 0
@@ -45,12 +32,12 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
 
     Set wbS = Workbooks.Open(CStr(srcPath), ReadOnly:=True)
 
-    'Hard-set the source sheet name you provided
+    'Source sheet
     On Error Resume Next
     Set wsS = wbS.Worksheets("CleanIssueReport")
     On Error GoTo 0
     If wsS Is Nothing Then
-        MsgBox "Could not find sheet 'CleanIssueReport' in the consolidated issue report file.", vbCritical
+        MsgBox "Could not find sheet 'CleanIssueReport' in the issue report file.", vbCritical
         GoTo CleanExit
     End If
 
@@ -59,22 +46,22 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
     InitLog wsLog
     LogEvent wsLog, "INFO", "", "", "", "Started run (source sheet: CleanIssueReport)."
 
-    '---- DEST headers ----
+    'DEST headers
     Dim hdrRowD As Long
     Dim colTaskName As Long, colIssueId As Long, colDesc As Long, colAssigned As Long, colDue As Long
 
-    hdrRowD = FindHeaderRow(wsD, Array("Remediation Task Name", "Issue Id", "Description", "Assigned to", "Due Date"), 300)
+    hdrRowD = FindHeaderRowExact(wsD, Array("Remediation Task Name", "Issue Id", "Description", "Assigned to", "Due Date"), 300)
     If hdrRowD = 0 Then
         MsgBox "Could not find required headers in Remediation Task sheet.", vbCritical
         LogEvent wsLog, "ERROR", "", "", "", "Missing headers in destination."
         GoTo CleanExit
     End If
 
-    colTaskName = FindHeaderColumn(wsD, hdrRowD, "Remediation Task Name")
-    colIssueId = FindHeaderColumn(wsD, hdrRowD, "Issue Id")
-    colDesc = FindHeaderColumn(wsD, hdrRowD, "Description")
-    colAssigned = FindHeaderColumn(wsD, hdrRowD, "Assigned to")
-    colDue = FindHeaderColumn(wsD, hdrRowD, "Due Date")
+    colTaskName = FindHeaderColumnExact(wsD, hdrRowD, "Remediation Task Name")
+    colIssueId = FindHeaderColumnExact(wsD, hdrRowD, "Issue Id")
+    colDesc = FindHeaderColumnExact(wsD, hdrRowD, "Description")
+    colAssigned = FindHeaderColumnExact(wsD, hdrRowD, "Assigned to")
+    colDue = FindHeaderColumnExact(wsD, hdrRowD, "Due Date")
 
     wsD.Columns(colTaskName).NumberFormat = "@"
     wsD.Columns(colIssueId).NumberFormat = "@"
@@ -82,42 +69,33 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
     wsD.Columns(colAssigned).NumberFormat = "@"
     wsD.Columns(colDue).NumberFormat = "m/d/yyyy"
 
-    '---- SOURCE headers ----
+    'SOURCE headers (keyword-based to avoid Issue vs Systems Exhibiting the Issue confusion)
     Dim hdrRowS As Long
-    Dim colPolSub As Long, colSystems As Long, colQID As Long, colOrigQ As Long
+    Dim colPolSub As Long, colSystems As Long, colQID As Long
     Dim colPlan As Long, colOwner As Long, colPlannedDate As Long
 
-    hdrRowS = FindHeaderRowLoose(wsS, Array( _
-        "Policy Sub-Domain", _
-        "Systems Exhibiting the Issue", _
-        "Question ID", _
-        "Original Question"), 800)
-
+    hdrRowS = FindSourceHeaderRow(wsS, 800)
     If hdrRowS = 0 Then
-        MsgBox "Could not find source headers (Policy Sub-Domain, Systems Exhibiting the Issue, Question ID, Original Question).", vbCritical
-        LogEvent wsLog, "ERROR", "", "", "", "Missing key headers in source."
+        MsgBox "Could not find source header row in CleanIssueReport.", vbCritical
+        LogEvent wsLog, "ERROR", "", "", "", "Missing source headers."
         GoTo CleanExit
     End If
 
-    colPolSub = FindHeaderColumnLoose(wsS, hdrRowS, "Policy Sub-Domain")
-    colSystems = FindHeaderColumnLoose(wsS, hdrRowS, "Systems Exhibiting the Issue")
-    colQID = FindHeaderColumnLoose(wsS, hdrRowS, "Question ID")
-    colOrigQ = FindHeaderColumnLoose(wsS, hdrRowS, "Original Question")
+    colPolSub = FindColByKeywords(wsS, hdrRowS, Array("policy", "sub", "domain"))
+    colSystems = FindColByKeywords(wsS, hdrRowS, Array("systems", "exhibiting", "issue"))  'MUST include systems
+    colQID = FindColByKeywords(wsS, hdrRowS, Array("question", "id"))
 
-    'Try common variants for remediation columns
-    colPlan = FindHeaderColumnLoose(wsS, hdrRowS, "Remediation Plan")
-    colOwner = FindHeaderColumnLoose(wsS, hdrRowS, "Remediation Owner")
+    colPlan = FindColByKeywords(wsS, hdrRowS, Array("remediation", "plan"))
+    colOwner = FindColByKeywords(wsS, hdrRowS, Array("remediation", "owner"))
+    colPlannedDate = FindColByKeywords(wsS, hdrRowS, Array("planned", "completion", "date"))
 
-    colPlannedDate = FindHeaderColumnLoose(wsS, hdrRowS, "Planned Remediation Completion Date")
-    If colPlannedDate = 0 Then colPlannedDate = FindHeaderColumnLoose(wsS, hdrRowS, "Remediation Completion Date")
-
-    If colPlan = 0 Or colOwner = 0 Or colPlannedDate = 0 Then
-        MsgBox "Could not find Remediation Plan / Remediation Owner / Planned Remediation Completion Date in the source file.", vbCritical
-        LogEvent wsLog, "ERROR", "", "", "", "Missing remediation columns in source."
+    If colPolSub = 0 Or colSystems = 0 Or colQID = 0 Or colPlan = 0 Or colOwner = 0 Or colPlannedDate = 0 Then
+        MsgBox "Missing one or more required columns in CleanIssueReport (Policy Sub-Domain, Systems Exhibiting the Issue, Question ID, Remediation Plan, Remediation Owner, Planned Completion Date).", vbCritical
+        LogEvent wsLog, "ERROR", "", "", "", "Missing required source columns."
         GoTo CleanExit
     End If
 
-    '---- Build destination indexes (existing rows) + learn prefixes ----
+    'Build dest indexes + choose most common prefix (fixes AN vs DTS problem)
     Dim existingMain As Object, existingIssue As Object
     Dim entityPrefix As Object
     Set existingMain = CreateObject("Scripting.Dictionary")
@@ -127,21 +105,18 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
     Dim globalPrefix As String
     globalPrefix = ""
 
-    BuildDestIndexes wsD, hdrRowD, colTaskName, existingMain, existingIssue, entityPrefix, globalPrefix
+    BuildDestIndexes_MostCommonPrefix wsD, hdrRowD, colTaskName, existingMain, existingIssue, entityPrefix, globalPrefix
     If Len(globalPrefix) = 0 Then globalPrefix = "Sweep 2 - "
 
-    LogEvent wsLog, "INFO", "", "", "", "Global prefix fallback: [" & globalPrefix & "]"
-    LogEvent wsLog, "INFO", "", "", "", "Entity prefixes learned: " & CStr(entityPrefix.Count)
-
-    '---- Iterate source rows ----
+    'Iterate source rows
     Dim lastRowS As Long, r As Long
     lastRowS = wsS.UsedRange.Rows(wsS.UsedRange.Rows.Count).Row
 
     Dim seenMainInRun As Object
-    Set seenMainInRun = CreateObject("Scripting.Dictionary") 'entity||policy -> True once first issue consumed as main
+    Set seenMainInRun = CreateObject("Scripting.Dictionary")
 
     Dim snippetCounts As Object
-    Set snippetCounts = CreateObject("Scripting.Dictionary") 'entity||policy||snippetBase -> count
+    Set snippetCounts = CreateObject("Scripting.Dictionary")
 
     For r = hdrRowS + 1 To lastRowS
 
@@ -168,8 +143,9 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
         ownerText = Trim(CStr(GetMergedValue(wsS.Cells(r, colOwner))))
         dueVal = GetMergedValue(wsS.Cells(r, colPlannedDate))
 
-        Dim origQ As String
-        origQ = Trim(CStr(GetMergedValue(wsS.Cells(r, colOrigQ))))
+        'snippet comes from Question ID / Original Question is not needed now;
+        'you asked to ignore Summary rows only, and create extra rows when entity repeats.
+        'If you still want a snippet, we can add it later from "Issue" or "Original Question".
 
         Dim e As Variant
         For Each e In entities
@@ -177,7 +153,6 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
             Dim entityDisplay As String, entityKey As String
             entityDisplay = CStr(e)
             entityKey = NormalizeKey(entityDisplay)
-
             If Len(entityKey) = 0 Then GoTo NextEntity
 
             Dim prefixText As String
@@ -190,33 +165,28 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
             Dim keyMain As String
             keyMain = entityKey & "||" & NormalizeKey(pol)
 
-            'Write main row for first issue we encounter (per entity+policy) in this run.
-            Dim isFirstForThisRun As Boolean
-            isFirstForThisRun = Not seenMainInRun.Exists(keyMain)
-
-            If isFirstForThisRun Then
+            If Not seenMainInRun.Exists(keyMain) Then
                 seenMainInRun.Add keyMain, True
                 UpsertMainRow wsD, hdrRowD, colTaskName, colIssueId, colDesc, colAssigned, colDue, _
                              existingMain, keyMain, prefixText, pol, entityDisplay, _
                              planText, ownerText, dueVal, wsLog
             Else
-                'Extra row: include snippet from Original Question
-                Dim snippet As String, snippetBaseKey As String, uniqSnippet As String
-                snippet = MakeSnippet(origQ)
-                If Len(snippet) = 0 Then snippet = "issue"
+                'Extra rows for same entity + same policy sub-domain
+                Dim snip As String, snipBaseKey As String, uniqSnip As String
+                snip = "extra issue"
 
-                snippetBaseKey = keyMain & "||" & NormalizeKey(snippet)
-                If snippetCounts.Exists(snippetBaseKey) Then
-                    snippetCounts(snippetBaseKey) = CLng(snippetCounts(snippetBaseKey)) + 1
-                    uniqSnippet = snippet & " " & CStr(snippetCounts(snippetBaseKey))
+                snipBaseKey = keyMain & "||" & NormalizeKey(snip)
+                If snippetCounts.Exists(snipBaseKey) Then
+                    snippetCounts(snipBaseKey) = CLng(snippetCounts(snipBaseKey)) + 1
+                    uniqSnip = snip & " " & CStr(snippetCounts(snipBaseKey))
                 Else
-                    snippetCounts.Add snippetBaseKey, 1
-                    uniqSnippet = snippet
+                    snippetCounts.Add snipBaseKey, 1
+                    uniqSnip = snip
                 End If
 
                 UpsertIssueRow wsD, hdrRowD, colTaskName, colIssueId, colDesc, colAssigned, colDue, _
-                               existingMain, existingIssue, keyMain, NormalizeKey(uniqSnippet), _
-                               prefixText, pol, entityDisplay, uniqSnippet, _
+                               existingMain, existingIssue, keyMain, NormalizeKey(uniqSnip), _
+                               prefixText, pol, entityDisplay, uniqSnip, _
                                planText, ownerText, dueVal, wsLog
             End If
 
@@ -227,9 +197,7 @@ NextRow:
     Next r
 
     LogEvent wsLog, "INFO", "", "", "", "Run complete."
-
-    MsgBox "Done! Imported/updated remediation plan/owner/due date from CleanIssueReport." & vbCrLf & _
-           "See 'Run Log' for details.", vbInformation
+    MsgBox "Done! Imported remediation plan/owner/due date from CleanIssueReport.", vbInformation
 
 CleanExit:
     On Error Resume Next
@@ -238,15 +206,12 @@ CleanExit:
     Application.ScreenUpdating = True
 End Sub
 
-'==========================================================
-' DEST UPSERTS
-'==========================================================
-
-Private Sub UpsertMainRow( _
-    ByVal wsD As Worksheet, ByVal hdrRowD As Long, _
+'============================================================
+' UPSERTS
+'============================================================
+Private Sub UpsertMainRow(ByVal wsD As Worksheet, ByVal hdrRowD As Long, _
     ByVal colTaskName As Long, ByVal colIssueId As Long, ByVal colDesc As Long, ByVal colAssigned As Long, ByVal colDue As Long, _
-    ByVal existingMain As Object, _
-    ByVal keyMain As String, _
+    ByVal existingMain As Object, ByVal keyMain As String, _
     ByVal prefixText As String, ByVal pol As String, ByVal entityDisplay As String, _
     ByVal planText As String, ByVal ownerText As String, ByVal dueVal As Variant, _
     ByVal wsLog As Worksheet)
@@ -270,8 +235,7 @@ Private Sub UpsertMainRow( _
     LogEvent wsLog, action, entityDisplay, pol, rowNum, "Main row written."
 End Sub
 
-Private Sub UpsertIssueRow( _
-    ByVal wsD As Worksheet, ByVal hdrRowD As Long, _
+Private Sub UpsertIssueRow(ByVal wsD As Worksheet, ByVal hdrRowD As Long, _
     ByVal colTaskName As Long, ByVal colIssueId As Long, ByVal colDesc As Long, ByVal colAssigned As Long, ByVal colDue As Long, _
     ByVal existingMain As Object, ByVal existingIssue As Object, _
     ByVal keyMain As String, ByVal snippetKeyNorm As String, _
@@ -299,29 +263,81 @@ Private Sub UpsertIssueRow( _
 
     'Replicate Issue Id from main row if present
     If existingMain.Exists(keyMain) Then
-        Dim mainRow As Long: mainRow = CLng(existingMain(keyMain))
-        Dim mainIssueId As String: mainIssueId = Trim(CStr(wsD.Cells(mainRow, colIssueId).Value))
-        If Len(mainIssueId) > 0 Then wsD.Cells(rowNum, colIssueId).Value = mainIssueId
+        Dim mainRow As Long
+        mainRow = CLng(existingMain(keyMain))
+
+        Dim mainIssueId As String
+        mainIssueId = Trim(CStr(wsD.Cells(mainRow, colIssueId).Value))
+
+        If Len(mainIssueId) > 0 Then
+            wsD.Cells(rowNum, colIssueId).Value = mainIssueId
+        End If
     End If
 
-    LogEvent wsLog, action, entityDisplay, pol, rowNum, "Extra issue row written: " & snippet
+    LogEvent wsLog, action, entityDisplay, pol, rowNum, "Extra issue row written."
 End Sub
 
-'==========================================================
-' DEST INDEX BUILDING + PREFIX LEARNING
-'==========================================================
+'============================================================
+' SOURCE HEADER FINDING (STRICT / KEYWORD BASED)
+'============================================================
+Private Function FindSourceHeaderRow(ByVal ws As Worksheet, ByVal maxRowsToScan As Long) As Long
+    Dim r As Long
+    For r = 1 To maxRowsToScan
+        If FindColByKeywords(ws, r, Array("policy", "sub", "domain")) > 0 _
+           And FindColByKeywords(ws, r, Array("systems", "exhibiting", "issue")) > 0 _
+           And FindColByKeywords(ws, r, Array("question", "id")) > 0 Then
+            FindSourceHeaderRow = r
+            Exit Function
+        End If
+    Next r
+    FindSourceHeaderRow = 0
+End Function
 
-Private Sub BuildDestIndexes( _
-    ByVal wsD As Worksheet, ByVal hdrRowD As Long, ByVal colTaskName As Long, _
-    ByVal existingMain As Object, ByVal existingIssue As Object, _
-    ByVal entityPrefix As Object, ByRef globalPrefix As String)
+Private Function FindColByKeywords(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal keywords As Variant) As Long
+    Dim lastCol As Long, c As Long
+    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
+
+    For c = 1 To lastCol
+        Dim v As String
+        v = NormalizeKey(CStr(ws.Cells(headerRow, c).Value))
+        If Len(v) = 0 Then GoTo NextC
+
+        If ContainsAllKeywords(v, keywords) Then
+            FindColByKeywords = c
+            Exit Function
+        End If
+NextC:
+    Next c
+
+    FindColByKeywords = 0
+End Function
+
+Private Function ContainsAllKeywords(ByVal textNorm As String, ByVal keywords As Variant) As Boolean
+    Dim i As Long
+    For i = LBound(keywords) To UBound(keywords)
+        If InStr(1, textNorm, LCase$(CStr(keywords(i))), vbTextCompare) = 0 Then
+            ContainsAllKeywords = False
+            Exit Function
+        End If
+    Next i
+    ContainsAllKeywords = True
+End Function
+
+'============================================================
+' DEST INDEX + PREFIX (MOST COMMON PREFIX)
+'============================================================
+Private Sub BuildDestIndexes_MostCommonPrefix(ByVal wsD As Worksheet, ByVal hdrRowD As Long, ByVal colTaskName As Long, _
+    ByVal existingMain As Object, ByVal existingIssue As Object, ByVal entityPrefix As Object, ByRef globalPrefix As String)
+
+    Dim prefixCounts As Object
+    Set prefixCounts = CreateObject("Scripting.Dictionary")
 
     Dim lastRow As Long, r As Long
     lastRow = wsD.Cells(wsD.Rows.Count, colTaskName).End(xlUp).Row
 
     For r = hdrRowD + 1 To lastRow
 
-        Dim t As String/job
+        Dim t As String
         t = Trim(CStr(wsD.Cells(r, colTaskName).Value))
         If Len(t) = 0 Then GoTo NextR
 
@@ -332,9 +348,15 @@ Private Sub BuildDestIndexes( _
         snip = ExtractSnippetFromTaskName(t)
 
         If Len(pref) > 0 And IsGoodPrefix(pref) Then
-            If Len(globalPrefix) = 0 Then globalPrefix = pref
+            If prefixCounts.Exists(pref) Then
+                prefixCounts(pref) = CLng(prefixCounts(pref)) + 1
+            Else
+                prefixCounts.Add pref, 1
+            End If
+
             If Len(ent) > 0 Then
-                Dim ek As String: ek = NormalizeKey(ent)
+                Dim ek As String
+                ek = NormalizeKey(ent)
                 If Not entityPrefix.Exists(ek) Then entityPrefix.Add ek, pref
             End If
         End If
@@ -354,13 +376,22 @@ Private Sub BuildDestIndexes( _
 
 NextR:
     Next r
+
+    'pick most common prefix
+    globalPrefix = ""
+    Dim bestCnt As Long: bestCnt = 0
+    Dim k As Variant
+    For Each k In prefixCounts.Keys
+        If CLng(prefixCounts(k)) > bestCnt Then
+            bestCnt = CLng(prefixCounts(k))
+            globalPrefix = CStr(k)
+        End If
+    Next k
 End Sub
 
-'==========================================================
-' ENTITY PARSING (Systems Exhibiting the Issue)
-' Splits by line breaks, commas, semicolons.
-'==========================================================
-
+'============================================================
+' ENTITY PARSING
+'============================================================
 Private Function ParseEntities(ByVal raw As String) As Collection
     Dim c As New Collection
     Dim t As String
@@ -382,18 +413,15 @@ Private Function ParseEntities(ByVal raw As String) As Collection
     For i = LBound(parts) To UBound(parts)
         Dim p As String
         p = Trim(parts(i))
-        If Len(p) > 0 Then
-            c.Add p
-        End If
+        If Len(p) > 0 Then c.Add p
     Next i
 
     Set ParseEntities = c
 End Function
 
-'==========================================================
-' POLICY SUB-DOMAIN ALIASING
-'==========================================================
-
+'============================================================
+' POLICY SUB-DOMAIN ALIASES
+'============================================================
 Private Function CanonicalPolicySubDomain(ByVal pol As String) As String
     Dim t As String
     t = Trim(CStr(pol))
@@ -413,134 +441,38 @@ Private Function CanonicalPolicySubDomain(ByVal pol As String) As String
     End Select
 End Function
 
-'==========================================================
-' SNIPPET FROM Original Question (1-4 meaningful words)
-'==========================================================
-
-Private Function MakeSnippet(ByVal s As String) As String
-    s = Trim(CStr(s))
-    If Len(s) = 0 Then MakeSnippet = "": Exit Function
-
-    Dim t As String
-    t = s
-    t = Replace(t, vbCr, " ")
-    t = Replace(t, vbLf, " ")
-    t = Replace(t, ":", " ")
-    t = Replace(t, ";", " ")
-    t = Replace(t, ".", " ")
-    t = Replace(t, ",", " ")
-    t = Replace(t, "?", " ")
-    t = Replace(t, "!", " ")
-    t = Replace(t, "(", " ")
-    t = Replace(t, ")", " ")
-    t = Replace(t, "[", " ")
-    t = Replace(t, "]", " ")
-    t = Replace(t, "-", " ")
-    t = Replace(t, "_", " ")
-
-    Do While InStr(t, "  ") > 0
-        t = Replace(t, "  ", " ")
-    Loop
-    t = Trim(t)
-
-    Dim parts() As String
-    parts = Split(t, " ")
-
-    Dim out As String, cnt As Long, i As Long
-    For i = LBound(parts) To UBound(parts)
-        Dim w As String
-        w = Trim(parts(i))
-        If Len(w) = 0 Then GoTo NextW
-        If IsStopWord(w) Then GoTo NextW
-
-        out = out & IIf(Len(out) = 0, "", " ") & w
-        cnt = cnt + 1
-        If cnt >= 4 Then Exit For
-NextW:
-    Next i
-
-    MakeSnippet = out
-End Function
-
-Private Function IsStopWord(ByVal w As String) As Boolean
-    Select Case LCase$(w)
-        Case "the", "a", "an", "and", "or", "to", "of", "in", "on", "for", "with", "is", "are", "was", "were", _
-             "be", "been", "being", "by", "at", "as", "it", "this", "that", "these", "those", "your", "you", _
-             "shall", "should", "must", "may", "can", "could", "will", "would", "do", "does", "did", "from"
-            IsStopWord = True
-        Case Else
-            IsStopWord = False
-    End Select
-End Function
-
-'==========================================================
-' HEADER FINDING
-'==========================================================
-
-Private Function FindHeaderRow(ByVal ws As Worksheet, ByVal headers As Variant, ByVal maxRowsToScan As Long) As Long
+'============================================================
+' HEADERS (DEST EXACT)
+'============================================================
+Private Function FindHeaderRowExact(ByVal ws As Worksheet, ByVal headers As Variant, ByVal maxRowsToScan As Long) As Long
     Dim r As Long, i As Long
     For r = 1 To maxRowsToScan
         For i = LBound(headers) To UBound(headers)
-            If FindHeaderColumn(ws, r, CStr(headers(i))) = 0 Then GoTo NextR
+            If FindHeaderColumnExact(ws, r, CStr(headers(i))) = 0 Then GoTo NextR
         Next i
-        FindHeaderRow = r
+        FindHeaderRowExact = r
         Exit Function
 NextR:
     Next r
-    FindHeaderRow = 0
+    FindHeaderRowExact = 0
 End Function
 
-Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerText As String) As Long
+Private Function FindHeaderColumnExact(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerText As String) As Long
     Dim lastCol As Long, c As Long, v As String
     lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
     For c = 1 To lastCol
         v = Trim(CStr(ws.Cells(headerRow, c).Value))
         If StrComp(v, headerText, vbTextCompare) = 0 Then
-            FindHeaderColumn = c
+            FindHeaderColumnExact = c
             Exit Function
         End If
     Next c
-    FindHeaderColumn = 0
+    FindHeaderColumnExact = 0
 End Function
 
-Private Function FindHeaderRowLoose(ByVal ws As Worksheet, ByVal headers As Variant, ByVal maxRowsToScan As Long) As Long
-    Dim r As Long, i As Long
-    For r = 1 To maxRowsToScan
-        For i = LBound(headers) To UBound(headers)
-            If FindHeaderColumnLoose(ws, r, CStr(headers(i))) = 0 Then GoTo NextR
-        Next i
-        FindHeaderRowLoose = r
-        Exit Function
-NextR:
-    Next r
-    FindHeaderRowLoose = 0
-End Function
-
-Private Function FindHeaderColumnLoose(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerText As String) As Long
-    Dim lastCol As Long, c As Long
-    Dim target As String, v As String
-    target = NormalizeKey(headerText)
-
-    lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
-    For c = 1 To lastCol
-        v = NormalizeKey(CStr(ws.Cells(headerRow, c).Value))
-        If v = target Then
-            FindHeaderColumnLoose = c
-            Exit Function
-        End If
-        If InStr(1, v, target, vbTextCompare) > 0 Or InStr(1, target, v, vbTextCompare) > 0 Then
-            FindHeaderColumnLoose = c
-            Exit Function
-        End If
-    Next c
-
-    FindHeaderColumnLoose = 0
-End Function
-
-'==========================================================
+'============================================================
 ' MERGED SAFE GET
-'==========================================================
-
+'============================================================
 Private Function GetMergedValue(ByVal cell As Range) As Variant
     If cell.MergeCells Then
         GetMergedValue = cell.MergeArea.Cells(1, 1).Value
@@ -549,10 +481,9 @@ Private Function GetMergedValue(ByVal cell As Range) As Variant
     End If
 End Function
 
-'==========================================================
-' NORMALIZATION
-'==========================================================
-
+'============================================================
+' NORMALIZE
+'============================================================
 Private Function NormalizeKey(ByVal s As String) As String
     Dim t As String
     t = LCase$(Trim(CStr(s)))
@@ -566,10 +497,9 @@ Private Function NormalizeKey(ByVal s As String) As String
     NormalizeKey = t
 End Function
 
-'==========================================================
-' DEST ROW APPEND + DATE
-'==========================================================
-
+'============================================================
+' APPEND / DATE
+'============================================================
 Private Function AppendNewDestRow(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal colAnchor As Long) As Long
     Dim outRow As Long
     outRow = ws.Cells(ws.Rows.Count, colAnchor).End(xlUp).Row + 1
@@ -587,10 +517,9 @@ Private Sub WriteDateSmart(ByVal targetCell As Range, ByVal v As Variant)
     End If
 End Sub
 
-'==========================================================
-' PARSING FROM DEST TASK NAME
-'==========================================================
-
+'============================================================
+' PARSE TASK NAME (DEST)
+'============================================================
 Private Function ExtractBetweenParens(ByVal s As String) As String
     Dim p1 As Long, p2 As Long
     p1 = InStrRev(s, "(")
@@ -697,10 +626,9 @@ Private Function IsGoodPrefix(ByVal pref As String) As Boolean
     IsGoodPrefix = True
 End Function
 
-'==========================================================
+'============================================================
 ' LOGGING
-'==========================================================
-
+'============================================================
 Private Function GetOrCreateLogSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
     On Error Resume Next
     Set GetOrCreateLogSheet = wb.Worksheets(sheetName)
