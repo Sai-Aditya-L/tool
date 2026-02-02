@@ -46,7 +46,9 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
     InitLog wsLog
     LogEvent wsLog, "INFO", "", "", "", "Started run (source sheet: CleanIssueReport)."
 
-    'DEST headers
+    '============================================================
+    ' DEST HEADERS
+    '============================================================
     Dim hdrRowD As Long
     Dim colTaskName As Long, colIssueId As Long, colDesc As Long, colAssigned As Long, colDue As Long
 
@@ -69,10 +71,13 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
     wsD.Columns(colAssigned).NumberFormat = "@"
     wsD.Columns(colDue).NumberFormat = "m/d/yyyy"
 
-    'SOURCE headers (keyword-based to avoid Issue vs Systems Exhibiting the Issue confusion)
+    '============================================================
+    ' SOURCE HEADERS (STRICT / KEYWORD-BASED)
+    '============================================================
     Dim hdrRowS As Long
     Dim colPolSub As Long, colSystems As Long, colQID As Long
     Dim colPlan As Long, colOwner As Long, colPlannedDate As Long
+    Dim colOrigQ As Long
 
     hdrRowS = FindSourceHeaderRow(wsS, 800)
     If hdrRowS = 0 Then
@@ -82,20 +87,24 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
     End If
 
     colPolSub = FindColByKeywords(wsS, hdrRowS, Array("policy", "sub", "domain"))
-    colSystems = FindColByKeywords(wsS, hdrRowS, Array("systems", "exhibiting", "issue"))  'MUST include systems
+    colSystems = FindColByKeywords(wsS, hdrRowS, Array("systems", "exhibiting", "issue")) 'MUST include systems
     colQID = FindColByKeywords(wsS, hdrRowS, Array("question", "id"))
+
+    colOrigQ = FindColByKeywords(wsS, hdrRowS, Array("original", "question"))
 
     colPlan = FindColByKeywords(wsS, hdrRowS, Array("remediation", "plan"))
     colOwner = FindColByKeywords(wsS, hdrRowS, Array("remediation", "owner"))
     colPlannedDate = FindColByKeywords(wsS, hdrRowS, Array("planned", "completion", "date"))
 
-    If colPolSub = 0 Or colSystems = 0 Or colQID = 0 Or colPlan = 0 Or colOwner = 0 Or colPlannedDate = 0 Then
-        MsgBox "Missing one or more required columns in CleanIssueReport (Policy Sub-Domain, Systems Exhibiting the Issue, Question ID, Remediation Plan, Remediation Owner, Planned Completion Date).", vbCritical
+    If colPolSub = 0 Or colSystems = 0 Or colQID = 0 Or colOrigQ = 0 Or colPlan = 0 Or colOwner = 0 Or colPlannedDate = 0 Then
+        MsgBox "Missing required columns in CleanIssueReport (Policy Sub-Domain, Systems Exhibiting the Issue, Question ID, Original Question, Remediation Plan, Remediation Owner, Planned Remediation Completion Date).", vbCritical
         LogEvent wsLog, "ERROR", "", "", "", "Missing required source columns."
         GoTo CleanExit
     End If
 
-    'Build dest indexes + choose most common prefix (fixes AN vs DTS problem)
+    '============================================================
+    ' BUILD DEST INDEXES + CHOOSE MOST COMMON PREFIX
+    '============================================================
     Dim existingMain As Object, existingIssue As Object
     Dim entityPrefix As Object
     Set existingMain = CreateObject("Scripting.Dictionary")
@@ -106,9 +115,15 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
     globalPrefix = ""
 
     BuildDestIndexes_MostCommonPrefix wsD, hdrRowD, colTaskName, existingMain, existingIssue, entityPrefix, globalPrefix
-    If Len(globalPrefix) = 0 Then globalPrefix = "Sweep 2 - "
 
-    'Iterate source rows
+    If Len(globalPrefix) = 0 Then
+        'Fallback default
+        globalPrefix = "DTS Sweep 2 - "
+    End If
+
+    '============================================================
+    ' PROCESS SOURCE ROWS
+    '============================================================
     Dim lastRowS As Long, r As Long
     lastRowS = wsS.UsedRange.Rows(wsS.UsedRange.Rows.Count).Row
 
@@ -137,15 +152,16 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
         Set entities = ParseEntities(systemsRaw)
         If entities.Count = 0 Then GoTo NextRow
 
+        'Remediation fields
         Dim planText As String, ownerText As String
         Dim dueVal As Variant
         planText = Trim(CStr(GetMergedValue(wsS.Cells(r, colPlan))))
         ownerText = Trim(CStr(GetMergedValue(wsS.Cells(r, colOwner))))
         dueVal = GetMergedValue(wsS.Cells(r, colPlannedDate))
 
-        'snippet comes from Question ID / Original Question is not needed now;
-        'you asked to ignore Summary rows only, and create extra rows when entity repeats.
-        'If you still want a snippet, we can add it later from "Issue" or "Original Question".
+        'Snippet ONLY from Original Question
+        Dim qText As String
+        qText = Trim(CStr(GetMergedValue(wsS.Cells(r, colOrigQ))))
 
         Dim e As Variant
         For Each e In entities
@@ -171,9 +187,11 @@ Public Sub Populate_RemediationTasks_From_Consolidated_IssueReport()
                              existingMain, keyMain, prefixText, pol, entityDisplay, _
                              planText, ownerText, dueVal, wsLog
             Else
-                'Extra rows for same entity + same policy sub-domain
+                'Extra rows
                 Dim snip As String, snipBaseKey As String, uniqSnip As String
-                snip = "extra issue"
+
+                snip = MakeBriefSnippet(qText, 4) '<<< change 4 to 3 if you want
+                If Len(snip) = 0 Then snip = "extra"
 
                 snipBaseKey = keyMain & "||" & NormalizeKey(snip)
                 If snippetCounts.Exists(snipBaseKey) Then
@@ -269,16 +287,14 @@ Private Sub UpsertIssueRow(ByVal wsD As Worksheet, ByVal hdrRowD As Long, _
         Dim mainIssueId As String
         mainIssueId = Trim(CStr(wsD.Cells(mainRow, colIssueId).Value))
 
-        If Len(mainIssueId) > 0 Then
-            wsD.Cells(rowNum, colIssueId).Value = mainIssueId
-        End If
+        If Len(mainIssueId) > 0 Then wsD.Cells(rowNum, colIssueId).Value = mainIssueId
     End If
 
     LogEvent wsLog, action, entityDisplay, pol, rowNum, "Extra issue row written."
 End Sub
 
 '============================================================
-' SOURCE HEADER FINDING (STRICT / KEYWORD BASED)
+' SOURCE HEADER FINDING
 '============================================================
 Private Function FindSourceHeaderRow(ByVal ws As Worksheet, ByVal maxRowsToScan As Long) As Long
     Dim r As Long
@@ -377,7 +393,6 @@ Private Sub BuildDestIndexes_MostCommonPrefix(ByVal wsD As Worksheet, ByVal hdrR
 NextR:
     Next r
 
-    'pick most common prefix
     globalPrefix = ""
     Dim bestCnt As Long: bestCnt = 0
     Dim k As Variant
@@ -434,8 +449,8 @@ Private Function CanonicalPolicySubDomain(ByVal pol As String) As String
             CanonicalPolicySubDomain = "Multi-Factor Authentication"
         Case LCase$("Protection of Systems and Communications")
             CanonicalPolicySubDomain = "Protection of System and Communications"
-        Case LCase$("Access Control - Separate Admin Account")
-            CanonicalPolicySubDomain = "Separate Admin Account"
+        Case LCase$("Separate Admin Account")
+            CanonicalPolicySubDomain = "Access Control - Separate Admin Account"
         Case Else
             CanonicalPolicySubDomain = t
     End Select
@@ -624,6 +639,56 @@ Private Function IsGoodPrefix(ByVal pref As String) As Boolean
     If InStr(1, t, "-", vbTextCompare) = 0 Then IsGoodPrefix = False: Exit Function
 
     IsGoodPrefix = True
+End Function
+
+'============================================================
+' SNIPPET (Original Question)
+'============================================================
+Private Function MakeBriefSnippet(ByVal textIn As String, ByVal maxWords As Long) As String
+    Dim t As String
+    t = Trim(CStr(textIn))
+    If Len(t) = 0 Then
+        MakeBriefSnippet = ""
+        Exit Function
+    End If
+
+    t = Replace(t, vbCrLf, " ")
+    t = Replace(t, vbCr, " ")
+    t = Replace(t, vbLf, " ")
+
+    t = Replace(t, "?", "")
+    t = Replace(t, ".", "")
+    t = Replace(t, ":", "")
+    t = Replace(t, ";", "")
+    t = Replace(t, ",", "")
+    t = Replace(t, "(", "")
+    t = Replace(t, ")", "")
+    t = Replace(t, """", "")
+
+    Do While InStr(t, "  ") > 0
+        t = Replace(t, "  ", " ")
+    Loop
+
+    Dim parts() As String
+    parts = Split(t, " ")
+
+    Dim i As Long, out As String, cnt As Long
+    out = ""
+    cnt = 0
+
+    For i = LBound(parts) To UBound(parts)
+        If Len(parts(i)) > 0 Then
+            cnt = cnt + 1
+            If out = "" Then
+                out = parts(i)
+            Else
+                out = out & " " & parts(i)
+            End If
+            If cnt >= maxWords Then Exit For
+        End If
+    Next i
+
+    MakeBriefSnippet = Trim(out)
 End Function
 
 '============================================================
