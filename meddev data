@@ -3,7 +3,7 @@ Option Explicit
 '=========================================================
 ' MAIN
 '=========================================================
-Public Sub Import_MedDev_Remediation_From_IssueReport()
+Public Sub Import_MedDev_Remediation_v2()
 
     Dim issuePath As String, taskPath As String
     Dim wbIssue As Workbook, wbTask As Workbook
@@ -14,41 +14,38 @@ Public Sub Import_MedDev_Remediation_From_IssueReport()
     Dim cTaskName As Long, cIssueID As Long, cDesc As Long, cAssigned As Long, cDue As Long
 
     Dim divisionLabel As String
-    divisionLabel = "MedDev" 'default; auto-detected if possible from target sheet
+    divisionLabel = "MedDev"
 
     Application.ScreenUpdating = False
     Application.EnableEvents = False
     Application.DisplayAlerts = False
 
-    '--- Pick files
-    issuePath = PickExcelFile("Select the ISSUE REPORT workbook")
+    '--- Pick files (ALWAYS ask)
+    issuePath = PickExcelFile("Select the ISSUE REPORT workbook (contains sheet: Remediation)")
     If Len(issuePath) = 0 Then GoTo CleanExit
 
-    taskPath = PickExcelFile("Select the REMEDIATION TASK workbook")
+    taskPath = PickExcelFile("Select the REMEDIATION TASK workbook (contains sheet: Sweep 2 Remediation Tasks)")
     If Len(taskPath) = 0 Then GoTo CleanExit
 
     '--- Open
     Set wbIssue = Workbooks.Open(issuePath, ReadOnly:=True)
     Set wbTask = Workbooks.Open(taskPath)
 
-    '--- Source sheet: Remediation (must exist)
+    '--- Source sheet MUST be Remediation
     Set wsSrc = GetSheetByNameLoose(wbIssue, "Remediation")
     If wsSrc Is Nothing Then
-        MsgBox "Could not find source sheet named 'Remediation' in: " & wbIssue.Name, vbCritical
+        MsgBox "Source sheet 'Remediation' not found in: " & wbIssue.Name, vbCritical
         GoTo CleanExit
     End If
 
-    '--- Target sheet: Sweep 2 Remediation Tasks (fallback: find by headers)
+    '--- Target sheet
     Set wsTgt = GetSheetByNameLoose(wbTask, "Sweep 2 Remediation Tasks")
     If wsTgt Is Nothing Then
-        Set wsTgt = FindSheetByHeaders(wbTask, Array("Remediation Task Name", "Description", "Assigned To"))
-    End If
-    If wsTgt Is Nothing Then
-        MsgBox "Could not find the target Remediation Task sheet in: " & wbTask.Name, vbCritical
+        MsgBox "Target sheet 'Sweep 2 Remediation Tasks' not found in: " & wbTask.Name, vbCritical
         GoTo CleanExit
     End If
 
-    '--- Log sheet is created INSIDE the remediation task workbook
+    '--- Log sheet inside TASK workbook
     Set wsLog = GetOrCreateSheet(wbTask, "Run Log")
     InitLog wsLog
     LogLine wsLog, "INFO", "", "", "Started run."
@@ -56,17 +53,17 @@ Public Sub Import_MedDev_Remediation_From_IssueReport()
     LogLine wsLog, "INFO", "", "", "Remediation Task: " & wbTask.Name & " | Sheet: " & wsTgt.Name
 
     '=========================================================
-    ' FIND SOURCE HEADERS (scan first 50 rows)
+    ' MAP SOURCE
     '=========================================================
-    hdrRowS = FindHeaderRow(wsSrc, Array("Application/Site Name"), 50)
+    hdrRowS = FindHeaderRow(wsSrc, Array("Application/Site Name", "Questions", "Remediation Plan"), 80)
     If hdrRowS = 0 Then
-        MsgBox "Could not find header 'Application/Site Name' in source sheet.", vbCritical
+        MsgBox "Could not find required headers in Issue Report > Remediation sheet." & vbCrLf & _
+               "Need: Application/Site Name, Questions, Remediation Plan", vbCritical
         GoTo CleanExit
     End If
 
     cEntity = FindColExact(wsSrc, hdrRowS, "Application/Site Name")
 
-    'Policy Sub-Domain is preferred; fallback to Self Assessment Section
     cPolicy = FindColExact(wsSrc, hdrRowS, "Policy Sub-Domain")
     If cPolicy = 0 Then cPolicy = FindColExact(wsSrc, hdrRowS, "Self Assessment Section")
 
@@ -77,17 +74,21 @@ Public Sub Import_MedDev_Remediation_From_IssueReport()
     cQID = FindColExact(wsSrc, hdrRowS, "Question id") 'optional
 
     If cEntity = 0 Or cPolicy = 0 Or cQuestions = 0 Or cPlan = 0 Then
-        MsgBox "Source sheet is missing required headers." & vbCrLf & _
-               "Need: Application/Site Name, Policy Sub-Domain (or Self Assessment Section), Questions, Remediation Plan.", vbCritical
+        MsgBox "Issue Report is missing required columns." & vbCrLf & _
+               "Need: Application/Site Name, Policy Sub-Domain (or Self Assessment Section), Questions, Remediation Plan", vbCritical
         GoTo CleanExit
     End If
 
+    LogLine wsLog, "INFO", "", "", "Source header row: " & hdrRowS & _
+                   " | Entity col=" & cEntity & ", Policy col=" & cPolicy & _
+                   ", Questions col=" & cQuestions & ", Plan col=" & cPlan
+
     '=========================================================
-    ' FIND TARGET HEADERS (scan first 50 rows)
+    ' MAP TARGET
     '=========================================================
-    hdrRowT = FindHeaderRow(wsTgt, Array("Remediation Task Name", "Description", "Assigned To"), 50)
+    hdrRowT = FindHeaderRow(wsTgt, Array("Remediation Task Name", "Description", "Assigned To"), 80)
     If hdrRowT = 0 Then
-        MsgBox "Could not find required headers in target sheet.", vbCritical
+        MsgBox "Could not find required headers in Remediation Task sheet.", vbCritical
         GoTo CleanExit
     End If
 
@@ -95,38 +96,57 @@ Public Sub Import_MedDev_Remediation_From_IssueReport()
     cDesc = FindColExact(wsTgt, hdrRowT, "Description")
     cAssigned = FindColExact(wsTgt, hdrRowT, "Assigned To")
 
-    cIssueID = FindColExact(wsTgt, hdrRowT, "Issue ID") 'may exist
+    cIssueID = FindColExact(wsTgt, hdrRowT, "Issue ID") 'optional but expected
     cDue = FindColExact(wsTgt, hdrRowT, "Due Date")
     If cDue = 0 Then cDue = FindColExact(wsTgt, hdrRowT, "Remediation Completion Date")
     If cDue = 0 Then cDue = FindColExact(wsTgt, hdrRowT, "Planned Remediation Completion Date")
 
     If cTaskName = 0 Or cDesc = 0 Or cAssigned = 0 Or cDue = 0 Then
-        MsgBox "Target sheet missing required headers." & vbCrLf & _
+        MsgBox "Target sheet missing required columns." & vbCrLf & _
                "Need: Remediation Task Name, Description, Assigned To, Due Date (or Remediation Completion Date).", vbCritical
         GoTo CleanExit
     End If
 
-    'Auto-detect division label from existing tasks if possible
-    divisionLabel = DetectDivisionFromTarget(wsTgt, hdrRowT, cTaskName, divisionLabel)
+    LogLine wsLog, "INFO", "", "", "Target header row: " & hdrRowT & _
+                   " | TaskName col=" & cTaskName & ", Desc col=" & cDesc & _
+                   ", Assigned col=" & cAssigned & ", Due col=" & cDue & _
+                   ", IssueID col=" & cIssueID
+
+    'Detect division label from FIRST REAL row (not template)
+    divisionLabel = DetectDivisionFromTarget_IgnoreTemplates(wsTgt, hdrRowT, cTaskName, divisionLabel)
+    LogLine wsLog, "INFO", "", "", "Division label used: " & divisionLabel
 
     '=========================================================
-    ' BUILD EXISTING INDEX:
-    ' 1) Existing full task names (to prevent duplicates)
-    ' 2) Existing Issue ID by (Entity + Policy)
+    ' INDEX EXISTING REAL ROWS (ignore templates!)
     '=========================================================
     Dim existingTasks As Object: Set existingTasks = CreateObject("Scripting.Dictionary")
     Dim issueIdByKey As Object: Set issueIdByKey = CreateObject("Scripting.Dictionary")
 
-    BuildTargetIndexes wsTgt, hdrRowT, cTaskName, cIssueID, existingTasks, issueIdByKey, wsLog
+    BuildTargetIndexes_IgnoreTemplates wsTgt, hdrRowT, cTaskName, cIssueID, existingTasks, issueIdByKey, wsLog
 
     '=========================================================
-    ' PROCESS SOURCE ROWS (handles merged entity cells!)
+    ' CHOOSE WRITE START ROW:
+    ' Prefer first TEMPLATE placeholder row to overwrite.
+    ' Otherwise append after last REAL row.
+    '=========================================================
+    Dim outRow As Long
+    outRow = FirstTemplateRow(wsTgt, hdrRowT, cTaskName, cIssueID, cDesc)
+    If outRow = 0 Then
+        outRow = AppendAfterLastRealRow(wsTgt, hdrRowT, cTaskName)
+    End If
+
+    LogLine wsLog, "INFO", "", "", "Writing will start at row: " & outRow
+
+    '=========================================================
+    ' PROCESS SOURCE
     '=========================================================
     Dim lastRowS As Long: lastRowS = LastUsedRow(wsSrc)
-    Dim outRow As Long: outRow = NextWriteRow(wsTgt, hdrRowT, cTaskName)
 
-    Dim written As Long, skipped As Long, readRows As Long
-    written = 0: skipped = 0: readRows = 0
+    Dim written As Long, skipped As Long, scanned As Long
+    written = 0: skipped = 0: scanned = 0
+
+    Dim firstWrittenRow As Long: firstWrittenRow = 0
+    Dim lastWrittenRow As Long: lastWrittenRow = 0
 
     Dim r As Long
     For r = hdrRowS + 1 To lastRowS
@@ -138,68 +158,72 @@ Public Sub Import_MedDev_Remediation_From_IssueReport()
         policy = Trim$(CStr(GetMergedValue(wsSrc.Cells(r, cPolicy))))
         qText = Trim$(CStr(GetMergedValue(wsSrc.Cells(r, cQuestions))))
         plan = Trim$(CStr(GetMergedValue(wsSrc.Cells(r, cPlan))))
-        owner = IIf(cOwner > 0, Trim$(CStr(GetMergedValue(wsSrc.Cells(r, cOwner)))), "")
-        dueVal = IIf(cEnd > 0, GetMergedValue(wsSrc.Cells(r, cEnd)), "")
 
-        If cQID > 0 Then qid = Trim$(CStr(GetMergedValue(wsSrc.Cells(r, cQID)))) Else qid = ""
+        owner = ""
+        If cOwner > 0 Then owner = Trim$(CStr(GetMergedValue(wsSrc.Cells(r, cOwner))))
 
-        'Count non-empty-ish rows so you can sanity check
-        If Len(entity) > 0 Or Len(policy) > 0 Or Len(qText) > 0 Or Len(plan) > 0 Or Len(owner) > 0 Or Len(Trim$(CStr(dueVal))) > 0 Then
-            readRows = readRows + 1
-        End If
+        dueVal = ""
+        If cEnd > 0 Then dueVal = GetMergedValue(wsSrc.Cells(r, cEnd))
 
-        'Skip header repeats / empty noise
+        qid = ""
+        If cQID > 0 Then qid = Trim$(CStr(GetMergedValue(wsSrc.Cells(r, cQID))))
+
+        'Count rows that look like data rows
+        If Len(entity) > 0 Or Len(policy) > 0 Or Len(qText) > 0 Or Len(plan) > 0 Then scanned = scanned + 1
+
+        'Skip empty noise
         If Len(entity) = 0 And Len(policy) = 0 And Len(qText) = 0 And Len(plan) = 0 Then
             skipped = skipped + 1
             GoTo NextR
         End If
 
-        'Skip QID Summary/N/A if present
+        'Optional skip summary-ish QIDs
         If Len(qid) > 0 Then
-            Dim qidLower As String: qidLower = LCase$(Trim$(qid))
+            Dim qidLower As String: qidLower = LCase$(qid)
             If qidLower = "summary" Or qidLower = "n/a" Or qidLower = "na" Then
                 skipped = skipped + 1
-                LogLine wsLog, "SKIP", entity, policy, "Skipped row " & r & " due to Question id=" & qid
+                LogLine wsLog, "SKIP", entity, policy, "Row " & r & " skipped due to Question id=" & qid
                 GoTo NextR
             End If
         End If
 
-        'We need these to build task
+        'Must have these
         If Len(entity) = 0 Or Len(policy) = 0 Or Len(plan) = 0 Then
             skipped = skipped + 1
-            LogLine wsLog, "SKIP", entity, policy, "Missing entity/policy/plan on row " & r
+            LogLine wsLog, "SKIP", entity, policy, "Row " & r & " missing entity/policy/plan"
             GoTo NextR
         End If
 
         policy = CanonicalPolicySubDomain(policy)
-
-        Dim snippet As String
-        snippet = MakeQuestionSnippet(qText, 85) 'longer, but still readable
+        Dim snippet As String: snippet = MakeQuestionSnippet(qText, 90)
 
         Dim taskName As String
         taskName = divisionLabel & " Sweep 2 - " & policy & " (" & entity & ")"
         If Len(snippet) > 0 Then taskName = taskName & " - " & snippet
 
-        Dim taskKey As String
-        taskKey = NormalizeKey(taskName)
+        Dim taskKey As String: taskKey = NormalizeKey(taskName)
 
+        'Avoid duplicates against real tasks we already have OR wrote in this run
         If existingTasks.Exists(taskKey) Then
             skipped = skipped + 1
-            LogLine wsLog, "SKIP", entity, policy, "Duplicate task already exists: " & Left$(taskName, 120)
+            LogLine wsLog, "SKIP", entity, policy, "Duplicate task exists: " & Left$(taskName, 140)
             GoTo NextR
         End If
 
-        'Write new row
-        wsTgt.Cells(outRow, cTaskName).Value = taskName
-        wsTgt.Cells(outRow, cDesc).Value = plan
-        wsTgt.Cells(outRow, cAssigned).Value = owner
-        WriteDateSmart wsTgt.Cells(outRow, cDue), dueVal
+        'If we are currently sitting on template rows, we overwrite them.
+        'If we landed on an occupied real row, jump to next empty row.
+        outRow = NextWritableRow(wsTgt, outRow, hdrRowT, cTaskName, cIssueID, cDesc)
 
-        'Copy Issue ID from existing matching (Entity+Policy) if available
+        'Write outputs
+        wsTgt.Cells(outRow, cTaskName).Value = taskName
+        wsTgt.Cells(outRow, cDesc).Value = plan                    'Description = Remediation Plan only
+        wsTgt.Cells(outRow, cAssigned).Value = owner               'Assigned To = Owner
+        WriteDateSmart wsTgt.Cells(outRow, cDue), dueVal            'Due Date = Remediation Timing End
+
+        'Copy Issue ID from existing matching (Entity + Policy)
         If cIssueID > 0 Then
             Dim keyEP As String
             keyEP = NormalizeKey(entity) & "||" & NormalizeKey(policy)
-
             If issueIdByKey.Exists(keyEP) Then
                 wsTgt.Cells(outRow, cIssueID).Value = CStr(issueIdByKey(keyEP))
             End If
@@ -207,6 +231,10 @@ Public Sub Import_MedDev_Remediation_From_IssueReport()
 
         existingTasks.Add taskKey, True
         written = written + 1
+
+        If firstWrittenRow = 0 Then firstWrittenRow = outRow
+        lastWrittenRow = outRow
+
         LogLine wsLog, "OK", entity, policy, "Wrote row " & outRow
 
         outRow = outRow + 1
@@ -214,13 +242,18 @@ Public Sub Import_MedDev_Remediation_From_IssueReport()
 NextR:
     Next r
 
-    LogLine wsLog, "INFO", "", "", "Rows scanned (non-empty-ish): " & readRows
+    LogLine wsLog, "INFO", "", "", "Rows scanned (data-ish): " & scanned
     LogLine wsLog, "INFO", "", "", "Rows written: " & written & " | Rows skipped: " & skipped
 
-    MsgBox "Done!" & vbCrLf & _
-           "Rows written: " & written & vbCrLf & _
-           "Rows skipped: " & skipped & vbCrLf & vbCrLf & _
-           "Debug log created in: '" & wbTask.Name & "' sheet 'Run Log'", vbInformation
+    If written = 0 Then
+        MsgBox "Run complete, but 0 rows were written." & vbCrLf & _
+               "Check 'Run Log' for skip reasons and verify headers in the Issue Report Remediation sheet.", vbExclamation
+    Else
+        MsgBox "Done!" & vbCrLf & _
+               "Rows written: " & written & vbCrLf & _
+               "Rows written range: " & firstWrittenRow & " to " & lastWrittenRow & vbCrLf & _
+               "See 'Run Log' in the remediation task workbook for details.", vbInformation
+    End If
 
 CleanExit:
     On Error Resume Next
@@ -231,12 +264,94 @@ CleanExit:
 End Sub
 
 '=========================================================
-' BUILD TARGET INDEXES
+' TEMPLATE / REAL ROW DETECTION
 '=========================================================
-Private Sub BuildTargetIndexes(ByVal wsTgt As Worksheet, ByVal hdrRowT As Long, _
-                              ByVal cTaskName As Long, ByVal cIssueID As Long, _
-                              ByVal existingTasks As Object, ByVal issueIdByKey As Object, _
-                              ByVal wsLog As Worksheet)
+Private Function IsTemplateTaskName(ByVal taskName As String) As Boolean
+    Dim t As String: t = LCase$(Trim$(taskName))
+    If Len(t) = 0 Then
+        IsTemplateTaskName = False
+        Exit Function
+    End If
+
+    'common placeholders you showed
+    If InStr(t, "[division/country]") > 0 Then IsTemplateTaskName = True: Exit Function
+    If InStr(t, "[issue name]") > 0 Then IsTemplateTaskName = True: Exit Function
+    If InStr(t, "[entity name]") > 0 Then IsTemplateTaskName = True: Exit Function
+
+    'generic placeholder style: lots of [ ... ]
+    If InStr(t, "[") > 0 And InStr(t, "]") > 0 Then
+        'if it looks like a template sentence, treat as template
+        If InStr(t, "sweep") > 0 Then
+            IsTemplateTaskName = True
+            Exit Function
+        End If
+    End If
+
+    IsTemplateTaskName = False
+End Function
+
+Private Function FirstTemplateRow(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal cTask As Long, _
+                                  ByVal cIssueID As Long, ByVal cDesc As Long) As Long
+    Dim lastR As Long: lastR = LastUsedRow(ws)
+    Dim r As Long
+    For r = hdrRow + 1 To lastR
+        Dim tn As String: tn = Trim$(CStr(ws.Cells(r, cTask).Value))
+        If IsTemplateTaskName(tn) Then
+            'Prefer overwriting template rows that don't have a real Issue ID and are basically blank besides template
+            If cIssueID = 0 Or Len(Trim$(CStr(ws.Cells(r, cIssueID).Value))) = 0 Then
+                FirstTemplateRow = r
+                Exit Function
+            End If
+        End If
+    Next r
+    FirstTemplateRow = 0
+End Function
+
+Private Function AppendAfterLastRealRow(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal cTask As Long) As Long
+    Dim lastR As Long: lastR = LastUsedRow(ws)
+    Dim r As Long
+    For r = lastR To hdrRow + 1 Step -1
+        Dim tn As String: tn = Trim$(CStr(ws.Cells(r, cTask).Value))
+        If Len(tn) > 0 And Not IsTemplateTaskName(tn) Then
+            AppendAfterLastRealRow = r + 1
+            Exit Function
+        End If
+    Next r
+    AppendAfterLastRealRow = hdrRow + 1
+End Function
+
+Private Function NextWritableRow(ByVal ws As Worksheet, ByVal startRow As Long, ByVal hdrRow As Long, _
+                                 ByVal cTask As Long, ByVal cIssueID As Long, ByVal cDesc As Long) As Long
+    Dim r As Long: r = startRow
+    If r <= hdrRow Then r = hdrRow + 1
+
+    Do While True
+        Dim tn As String: tn = Trim$(CStr(ws.Cells(r, cTask).Value))
+
+        'Empty row is writable
+        If Len(tn) = 0 Then
+            NextWritableRow = r
+            Exit Function
+        End If
+
+        'Template row is writable (we overwrite)
+        If IsTemplateTaskName(tn) Then
+            NextWritableRow = r
+            Exit Function
+        End If
+
+        'Otherwise this is a real row, move down
+        r = r + 1
+    Loop
+End Function
+
+'=========================================================
+' BUILD TARGET INDEXES (IGNORE TEMPLATES)
+'=========================================================
+Private Sub BuildTargetIndexes_IgnoreTemplates(ByVal wsTgt As Worksheet, ByVal hdrRowT As Long, _
+                                              ByVal cTaskName As Long, ByVal cIssueID As Long, _
+                                              ByVal existingTasks As Object, ByVal issueIdByKey As Object, _
+                                              ByVal wsLog As Worksheet)
 
     Dim lastT As Long: lastT = LastUsedRow(wsTgt)
     Dim r As Long
@@ -246,6 +361,9 @@ Private Sub BuildTargetIndexes(ByVal wsTgt As Worksheet, ByVal hdrRowT As Long, 
         Dim tn As String
         tn = Trim$(CStr(wsTgt.Cells(r, cTaskName).Value))
         If Len(tn) = 0 Then GoTo NextR
+
+        'Ignore template rows completely
+        If IsTemplateTaskName(tn) Then GoTo NextR
 
         existingTasks(NormalizeKey(tn)) = True
 
@@ -260,16 +378,12 @@ Private Sub BuildTargetIndexes(ByVal wsTgt As Worksheet, ByVal hdrRowT As Long, 
             If Len(ent) > 0 And Len(pol) > 0 Then
                 pol = CanonicalPolicySubDomain(pol)
 
-                Dim keyEP As String
-                keyEP = NormalizeKey(ent) & "||" & NormalizeKey(pol)
-
                 Dim iid As String
                 iid = Trim$(CStr(wsTgt.Cells(r, cIssueID).Value))
-
                 If Len(iid) > 0 Then
-                    If Not issueIdByKey.Exists(keyEP) Then
-                        issueIdByKey.Add keyEP, iid
-                    End If
+                    Dim keyEP As String
+                    keyEP = NormalizeKey(ent) & "||" & NormalizeKey(pol)
+                    If Not issueIdByKey.Exists(keyEP) Then issueIdByKey.Add keyEP, iid
                 End If
             End If
         End If
@@ -277,9 +391,28 @@ Private Sub BuildTargetIndexes(ByVal wsTgt As Worksheet, ByVal hdrRowT As Long, 
 NextR:
     Next r
 
-    LogLine wsLog, "INFO", "", "", "Indexed existing tasks: " & existingTasks.Count
+    LogLine wsLog, "INFO", "", "", "Indexed existing REAL tasks: " & existingTasks.Count
     LogLine wsLog, "INFO", "", "", "Indexed Issue IDs by (Entity+Policy): " & issueIdByKey.Count
 End Sub
+
+Private Function DetectDivisionFromTarget_IgnoreTemplates(ByVal ws As Worksheet, ByVal hdrRow As Long, _
+                                                         ByVal cTask As Long, ByVal fallback As String) As String
+    Dim lastR As Long: lastR = LastUsedRow(ws)
+    Dim r As Long
+
+    For r = hdrRow + 1 To lastR
+        Dim s As String: s = Trim$(CStr(ws.Cells(r, cTask).Value))
+        If Len(s) > 0 And Not IsTemplateTaskName(s) Then
+            Dim p As Long: p = InStr(1, s, " Sweep 2 -", vbTextCompare)
+            If p > 1 Then
+                DetectDivisionFromTarget_IgnoreTemplates = Trim$(Left$(s, p - 1))
+                Exit Function
+            End If
+        End If
+    Next r
+
+    DetectDivisionFromTarget_IgnoreTemplates = fallback
+End Function
 
 '=========================================================
 ' POLICY NORMALIZATION (MEDDEV REQUIRED CHANGE)
@@ -291,7 +424,7 @@ Private Function CanonicalPolicySubDomain(ByVal pol As String) As String
         t = Replace(t, "  ", " ")
     Loop
 
-    'MEDDEV rule: "Secure Authentication - MFA" => "Multifactor Authentication" (in remediation task sheet)
+    'Rule you mentioned earlier in your environment
     If StrComp(t, "Secure Authentication - MFA", vbTextCompare) = 0 Then
         CanonicalPolicySubDomain = "Multifactor Authentication"
     Else
@@ -319,7 +452,7 @@ Private Function MakeQuestionSnippet(ByVal q As String, ByVal maxLen As Long) As
 End Function
 
 '=========================================================
-' TASK NAME PARSING (TARGET)
+' TASK NAME PARSING
 '=========================================================
 Private Function ExtractBetweenParens(ByVal s As String) As String
     Dim p1 As Long, p2 As Long
@@ -339,10 +472,7 @@ Private Function ExtractPolicyFromTaskName(ByVal s As String) As String
     Dim p As Long: p = InStr(1, lowerS, "sweep", vbTextCompare)
     If p = 0 Then ExtractPolicyFromTaskName = "": Exit Function
 
-    Dim p2 As Long: p2 = InStr(p, lowerS, "2", vbTextCompare)
-    If p2 = 0 Then ExtractPolicyFromTaskName = "": Exit Function
-
-    Dim dash As Long: dash = InStr(p2, lowerS, "-", vbTextCompare)
+    Dim dash As Long: dash = InStr(p, s, "-")
     If dash = 0 Then ExtractPolicyFromTaskName = "": Exit Function
 
     Dim startPos As Long: startPos = dash + 1
@@ -423,31 +553,6 @@ Private Function GetSheetByNameLoose(ByVal wb As Workbook, ByVal desired As Stri
     Set GetSheetByNameLoose = Nothing
 End Function
 
-Private Function FindSheetByHeaders(ByVal wb As Workbook, ByVal headers As Variant) As Worksheet
-    Dim ws As Worksheet, i As Long, ok As Boolean
-    For Each ws In wb.Worksheets
-        ok = True
-        For i = LBound(headers) To UBound(headers)
-            If FindHeaderRow(ws, Array(CStr(headers(i))), 30) = 0 Then
-                ok = False
-                Exit For
-            End If
-        Next i
-        If ok Then
-            Set FindSheetByHeaders = ws
-            Exit Function
-        End If
-    Next ws
-    Set FindSheetByHeaders = Nothing
-End Function
-
-Private Function NextWriteRow(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal colAnchor As Long) As Long
-    Dim r As Long
-    r = ws.Cells(ws.Rows.Count, colAnchor).End(xlUp).Row + 1
-    If r <= hdrRow Then r = hdrRow + 1
-    NextWriteRow = r
-End Function
-
 Private Function LastUsedRow(ByVal ws As Worksheet) As Long
     On Error GoTo EH
     Dim f As Range
@@ -502,28 +607,7 @@ Private Sub WriteDateSmart(ByVal targetCell As Range, ByVal v As Variant)
 End Sub
 
 '=========================================================
-' DIVISION DETECTOR
-'=========================================================
-Private Function DetectDivisionFromTarget(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal cTask As Long, ByVal fallback As String) As String
-    Dim lastR As Long: lastR = LastUsedRow(ws)
-    Dim r As Long
-
-    For r = hdrRow + 1 To lastR
-        Dim s As String: s = Trim$(CStr(ws.Cells(r, cTask).Value))
-        If Len(s) > 0 Then
-            Dim p As Long: p = InStr(1, s, " Sweep 2 -", vbTextCompare)
-            If p > 1 Then
-                DetectDivisionFromTarget = Trim$(Left$(s, p - 1))
-                Exit Function
-            End If
-        End If
-    Next r
-
-    DetectDivisionFromTarget = fallback
-End Function
-
-'=========================================================
-' LOGGING (created in Remediation Task workbook)
+' LOGGING
 '=========================================================
 Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
     Dim ws As Worksheet
@@ -542,7 +626,7 @@ Private Sub InitLog(ByVal wsLog As Worksheet)
     wsLog.Range("A1:E1").Value = Array("Timestamp", "Status", "Entity", "Policy Sub-Domain", "Message")
     wsLog.Rows(1).Font.Bold = True
     wsLog.Columns("A:E").ColumnWidth = 28
-    wsLog.Columns("E").ColumnWidth = 80
+    wsLog.Columns("E").ColumnWidth = 90
 End Sub
 
 Private Sub LogLine(ByVal wsLog As Worksheet, ByVal status As String, ByVal entity As String, ByVal policy As String, ByVal msg As String)
