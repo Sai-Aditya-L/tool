@@ -1,0 +1,280 @@
+Option Explicit
+
+'=========================================================
+' NEW DIVISION FORMAT (MedDev style issue report)
+' Source sheet FIXED: "Remediation"
+' Target sheet: "Sweep 2 Remediation Tasks"
+'
+' OUTPUT RULES:
+' - Description  = ONLY Remediation Plan
+' - Assigned To  = Owner
+' - Due Date     = Remediation Timing End
+' - Create NEW rows in target with task name:
+'     "<Division> Sweep 2 - <Policy Sub-Domain> (<Entity>) <question snippet>"
+'=========================================================
+Public Sub Build_New_RemediationTasks_From_RemediationSheet()
+
+    Const SOURCE_SHEET As String = "Remediation"
+    Const TARGET_SHEET As String = "Sweep 2 Remediation Tasks"
+    Const LOG_SHEET As String = "Run Log"
+
+    'If you want to hardcode the division instead of auto-detecting:
+    Const HARD_CODE_DIVISION As String = ""  ' e.g. "MedDev" (leave blank to auto-detect)
+
+    Dim wb As Workbook: Set wb = ActiveWorkbook
+    Dim wsSrc As Worksheet, wsTgt As Worksheet, wsLog As Worksheet
+
+    Set wsLog = GetOrCreateSheet(wb, LOG_SHEET)
+    InitLog wsLog
+    LogLine wsLog, "INFO", "", "", "Started run."
+
+    Set wsSrc = GetSheetIfExists(wb, SOURCE_SHEET)
+    If wsSrc Is Nothing Then
+        MsgBox "Source sheet '" & SOURCE_SHEET & "' not found.", vbCritical
+        Exit Sub
+    End If
+
+    Set wsTgt = GetSheetIfExists(wb, TARGET_SHEET)
+    If wsTgt Is Nothing Then
+        MsgBox "Target sheet '" & TARGET_SHEET & "' not found.", vbCritical
+        Exit Sub
+    End If
+
+    '----- Source headers (row 1)
+    Dim cEntity As Long, cPolicy As Long, cQuestions As Long
+    Dim cPlan As Long, cOwner As Long, cEnd As Long
+
+    cEntity = FindCol(wsSrc, "Application/Site Name")
+    cPolicy = FindCol(wsSrc, "Self Assessment Section")
+    cQuestions = FindCol(wsSrc, "Questions") ' this is the question text in your new issue report
+    cPlan = FindCol(wsSrc, "Remediation Plan")
+    cOwner = FindCol(wsSrc, "Owner")
+    cEnd = FindCol(wsSrc, "Remediation Timing End")
+
+    If cEntity = 0 Or cPolicy = 0 Or cPlan = 0 Then
+        MsgBox "Missing required headers on '" & SOURCE_SHEET & "'. Need at least:" & vbCrLf & _
+               "- Application/Site Name" & vbCrLf & _
+               "- Self Assessment Section" & vbCrLf & _
+               "- Remediation Plan", vbCritical
+        Exit Sub
+    End If
+
+    '----- Target headers
+    Dim cIssueID As Long, cTaskName As Long, cDesc As Long, cAssigned As Long, cDue As Long
+    cIssueID = FindCol(wsTgt, "Issue ID")                 ' may exist
+    cTaskName = FindCol(wsTgt, "Remediation Task Name")   ' required
+    cDesc = FindCol(wsTgt, "Description")                 ' required
+    cAssigned = FindCol(wsTgt, "Assigned To")             ' required
+    cDue = FindCol(wsTgt, "Due Date")                     ' IF your template uses Due Date
+    If cDue = 0 Then cDue = FindCol(wsTgt, "Remediation Completion Date") ' fallback header
+
+    If cTaskName = 0 Or cDesc = 0 Or cAssigned = 0 Then
+        MsgBox "Target sheet must have headers:" & vbCrLf & _
+               "- Remediation Task Name" & vbCrLf & _
+               "- Description" & vbCrLf & _
+               "- Assigned To", vbCritical
+        Exit Sub
+    End If
+    If cDue = 0 Then
+        MsgBox "Target sheet is missing a due date column header." & vbCrLf & _
+               "Add 'Due Date' (preferred) or 'Remediation Completion Date'.", vbCritical
+        Exit Sub
+    End If
+
+    '----- Determine Division label
+    Dim divisionLabel As String
+    If Len(Trim$(HARD_CODE_DIVISION)) > 0 Then
+        divisionLabel = Trim$(HARD_CODE_DIVISION)
+    Else
+        divisionLabel = DetectDivisionFromTarget(wsTgt, cTaskName)
+        If Len(divisionLabel) = 0 Then divisionLabel = "Division"
+    End If
+    LogLine wsLog, "INFO", "", "", "Division label used: " & divisionLabel
+
+    '----- Build an index of existing task names so we don't create duplicates
+    Dim existing As Object: Set existing = CreateObject("Scripting.Dictionary")
+    Dim lastTgt As Long: lastTgt = LastUsedRow(wsTgt)
+    Dim tr As Long
+
+    For tr = 2 To lastTgt
+        Dim tn As String: tn = CleanText(wsTgt.Cells(tr, cTaskName).Value)
+        If Len(tn) > 0 Then existing(UCase$(tn)) = True
+    Next tr
+
+    '----- Iterate source and write NEW rows
+    Dim lastSrc As Long: lastSrc = LastUsedRow(wsSrc)
+    Dim r As Long, wrote As Long, skipped As Long
+
+    Dim nextOut As Long
+    nextOut = IIf(lastTgt < 2, 2, lastTgt + 1)
+
+    For r = 2 To lastSrc
+
+        Dim entity As String, pol As String, plan As String, owner As String, dueVal As Variant
+        Dim qText As String, qSnippet As String, taskName As String
+
+        entity = CleanText(wsSrc.Cells(r, cEntity).Value)
+        pol = CleanText(wsSrc.Cells(r, cPolicy).Value)
+        plan = CleanText(wsSrc.Cells(r, cPlan).Value)
+
+        If cOwner > 0 Then owner = CleanText(wsSrc.Cells(r, cOwner).Value) Else owner = ""
+        If cEnd > 0 Then dueVal = wsSrc.Cells(r, cEnd).Value Else dueVal = ""
+
+        If cQuestions > 0 Then qText = CleanText(wsSrc.Cells(r, cQuestions).Value) Else qText = ""
+
+        ' Skip completely empty noise rows
+        If Len(entity) = 0 And Len(pol) = 0 And Len(plan) = 0 And Len(qText) = 0 Then
+            skipped = skipped + 1
+            GoTo NextRow
+        End If
+
+        ' Need minimum fields to create task
+        If Len(entity) = 0 Or Len(pol) = 0 Or Len(plan) = 0 Then
+            LogLine wsLog, "SKIP", entity, pol, "Missing entity/policy/plan on row " & r
+            skipped = skipped + 1
+            GoTo NextRow
+        End If
+
+        qSnippet = MakeQuestionSnippet(qText, 70) ' 70 chars
+        taskName = divisionLabel & " Sweep 2 - " & pol & " (" & entity & ")"
+        If Len(qSnippet) > 0 Then taskName = taskName & " " & qSnippet
+
+        ' Prevent duplicates
+        If existing.Exists(UCase$(taskName)) Then
+            LogLine wsLog, "SKIP", entity, pol, "Duplicate task exists (row " & r & ")"
+            skipped = skipped + 1
+            GoTo NextRow
+        End If
+
+        ' Write
+        wsTgt.Cells(nextOut, cTaskName).Value = taskName
+        wsTgt.Cells(nextOut, cDesc).Value = plan                 ' ONLY remediation plan
+        wsTgt.Cells(nextOut, cAssigned).Value = owner             ' Owner -> Assigned To
+        wsTgt.Cells(nextOut, cDue).Value = dueVal                 ' Remediation Timing End -> Due Date / Completion Date
+
+        ' Issue ID column: leave blank (unless you later want to populate from some source)
+        If cIssueID > 0 Then wsTgt.Cells(nextOut, cIssueID).Value = wsTgt.Cells(nextOut, cIssueID).Value
+
+        existing(UCase$(taskName)) = True
+        wrote = wrote + 1
+        LogLine wsLog, "OK", entity, pol, "Created row " & nextOut
+
+        nextOut = nextOut + 1
+
+NextRow:
+    Next r
+
+    MsgBox "Run complete." & vbCrLf & _
+           "Rows created: " & wrote & vbCrLf & _
+           "Rows skipped: " & skipped, vbInformation
+
+End Sub
+
+'=========================================================
+' Helper: detect "MedDev" / "CDS" etc from existing tasks
+' Looks at first non-empty task name and grabs text before " Sweep 2 -"
+'=========================================================
+Private Function DetectDivisionFromTarget(ByVal ws As Worksheet, ByVal cTask As Long) As String
+    Dim lastR As Long: lastR = LastUsedRow(ws)
+    Dim r As Long
+    For r = 2 To lastR
+        Dim s As String: s = CleanText(ws.Cells(r, cTask).Value)
+        If Len(s) > 0 Then
+            Dim p As Long: p = InStr(1, s, " Sweep 2 -", vbTextCompare)
+            If p > 1 Then
+                DetectDivisionFromTarget = Trim$(Left$(s, p - 1))
+                Exit Function
+            End If
+        End If
+    Next r
+    DetectDivisionFromTarget = ""
+End Function
+
+'=========================================================
+' Helper: create a compact "<questions snippets>" part
+' Removes line breaks, trims, and adds "..." if truncated
+'=========================================================
+Private Function MakeQuestionSnippet(ByVal q As String, ByVal maxLen As Long) As String
+    Dim s As String
+    s = Replace(q, vbCrLf, " ")
+    s = Replace(s, vbLf, " ")
+    s = Replace(s, vbTab, " ")
+    s = Application.WorksheetFunction.Trim(s)
+
+    If Len(s) = 0 Then
+        MakeQuestionSnippet = ""
+    ElseIf Len(s) <= maxLen Then
+        MakeQuestionSnippet = "<" & s & ">"
+    Else
+        MakeQuestionSnippet = "<" & Left$(s, maxLen - 3) & "...>"
+    End If
+End Function
+
+'=========================================================
+' Generic helpers (sheet/headers/cleaning/log)
+'=========================================================
+Private Function GetSheetIfExists(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set GetSheetIfExists = wb.Worksheets(sheetName)
+    On Error GoTo 0
+End Function
+
+Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+    Dim ws As Worksheet
+    Set ws = GetSheetIfExists(wb, sheetName)
+    If ws Is Nothing Then
+        Set ws = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        ws.Name = sheetName
+    End If
+    Set GetOrCreateSheet = ws
+End Function
+
+Private Function FindCol(ByVal ws As Worksheet, ByVal headerText As String) As Long
+    ' Finds header in row 1 (case-insensitive, trimmed)
+    Dim lastC As Long: lastC = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    Dim c As Long
+    For c = 1 To lastC
+        Dim h As String: h = CleanText(ws.Cells(1, c).Value)
+        If StrComp(h, headerText, vbTextCompare) = 0 Then
+            FindCol = c
+            Exit Function
+        End If
+    Next c
+    FindCol = 0
+End Function
+
+Private Function LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim lr As Long
+    lr = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+                       LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlPrevious, _
+                       MatchCase:=False).Row
+    LastUsedRow = lr
+    Exit Function
+HandleErr:
+    LastUsedRow = 1
+End Function
+
+Private Function CleanText(ByVal v As Variant) As String
+    If IsError(v) Then
+        CleanText = ""
+    Else
+        CleanText = Trim$(CStr(v))
+    End If
+End Function
+
+Private Sub InitLog(ByVal wsLog As Worksheet)
+    wsLog.Cells.Clear
+    wsLog.Range("A1:E1").Value = Array("Timestamp", "Status", "Entity", "Policy Sub-Domain", "Message")
+    wsLog.Rows(1).Font.Bold = True
+    wsLog.Columns("A:E").ColumnWidth = 28
+    wsLog.Columns("E").ColumnWidth = 70
+End Sub
+
+Private Sub LogLine(ByVal wsLog As Worksheet, ByVal status As String, ByVal entity As String, ByVal pol As String, ByVal msg As String)
+    Dim nr As Long: nr = wsLog.Cells(wsLog.Rows.Count, 1).End(xlUp).Row + 1
+    wsLog.Cells(nr, 1).Value = Now
+    wsLog.Cells(nr, 2).Value = status
+    wsLog.Cells(nr, 3).Value = entity
+    wsLog.Cells(nr, 4).Value = pol
+    wsLog.Cells(nr, 5).Value = msg
+End Sub
