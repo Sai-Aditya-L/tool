@@ -29,21 +29,23 @@ Public Sub Run_All_PowerBI_Builds()
     '1) Combined Metrics
     Build_CombinedMetrics_FromFolder folderPath, DEBUG_MODE, logWs
 
+    '1.5) Clean Combined Metrics (remove extra rows like "IT Function / Application Name / data class")
+    Clean_Combined_Metrics logWs
+
     '2) Simple Compliance
     Build_SimpleCompliance_FromFolder folderPath, logWs
 
-    '2.5) CLEAN Simple Compliance BEFORE summaries
+    '2.5) Clean Simple Compliance BEFORE summaries
     Clean_Simple_Compliance logWs
 
-    '3) Summaries based on CLEANED Simple Compliance
+    '3) Summaries from CLEANED Simple Compliance
     Build_AppAndSubdomain_Summaries_FromSimpleCompliance logWs
     Build_ITPolicy_Summary_FromSimpleCompliance logWs
 
     LogLine logWs, "Run_All_PowerBI_Builds", "OK", "Completed successfully."
     MsgBox "All done ✅" & vbCrLf & _
-           "Built: Combined Metrics, Simple Compliance (cleaned)," & vbCrLf & _
-           "App-SubDomain Compliance, App Compliance Summary," & vbCrLf & _
-           "IT-Policy Compliance Summary.", vbInformation
+           "Built: Combined Metrics (cleaned), Simple Compliance (cleaned)," & vbCrLf & _
+           "App-SubDomain Compliance, App Compliance Summary, IT-Policy Compliance Summary.", vbInformation
 
 CleanExit:
     Application.ScreenUpdating = oldSU
@@ -125,14 +127,14 @@ Private Sub Build_CombinedMetrics_FromFolder(ByVal folderPath As String, ByVal D
             End If
 
             Dim polSubCol As Long, qidCol As Long, lastRow As Long
-            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 20)
+            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 25)
             If polSubCol = 0 Then
                 LogLine logWs, fileName, "Skipped", "Could not find 'Policy Sub-Domain' in row 3."
                 GoTo CloseAndNext
             End If
 
-            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 20)
-            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 20)
+            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 25)
+            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 25)
 
             lastRow = ws.Cells(ws.Rows.Count, polSubCol).End(xlUp).Row
             If lastRow < 7 Then
@@ -161,7 +163,7 @@ Private Sub Build_CombinedMetrics_FromFolder(ByVal folderPath As String, ByVal D
                 dataClass = Trim$(ws.Cells(5, respCol).Text)
                 appId = Trim$(ws.Cells(4, respCol).Text)
                 daiId = Trim$(ws.Cells(6, respCol).Text)
-                numAsset = GetValueForLabel(ws, "Number of Asset", respCol, 1, 40, 8)
+                numAsset = GetValueForLabel(ws, "Number of Asset", respCol, 1, 50, 8)
 
                 outRow = outRow + 1
                 outWs.Cells(outRow, 1).Value = itFunc
@@ -211,8 +213,6 @@ CloseAndNext:
     outWs.Columns(hiddenStartCol + 1).Hidden = True
     outWs.Columns(hiddenStartCol + 2).Hidden = True
     outWs.Columns.AutoFit
-
-    If DEBUG_MODE Then dbgWs.Columns.AutoFit
     Exit Sub
 
 FileError:
@@ -262,6 +262,57 @@ Private Function ComputeMetricYN(ByVal ws As Worksheet, ByVal rStart As Long, By
 End Function
 
 '===========================================================
+' CLEAN: COMBINED METRICS (remove extra header/separator rows)
+'===========================================================
+Private Sub Clean_Combined_Metrics(ByVal logWs As Worksheet)
+    On Error GoTo Fail
+
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Worksheets("Combined Metrics")
+
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+    If lastRow < 2 Then
+        LogLine logWs, "Clean_Combined_Metrics", "Skipped", "No rows to clean."
+        Exit Sub
+    End If
+
+    Dim r As Long, removed As Long
+    removed = 0
+
+    For r = lastRow To 2 Step -1
+        Dim a As String, b As String, c As String
+        a = LCase$(Trim$(CStr(ws.Cells(r, 1).Value)))
+        b = LCase$(Trim$(CStr(ws.Cells(r, 2).Value)))
+        c = LCase$(Trim$(CStr(ws.Cells(r, 3).Value)))
+
+        If a = "it function" Then
+            ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+        End If
+
+        If b = "application name" Or b = "application/site name" Or b = "application/site" Then
+            ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+        End If
+
+        If c = "data class" Or c = "dataclass" Then
+            ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+        End If
+
+        If Len(b) = 0 Then
+            ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+        End If
+
+NextR:
+    Next r
+
+    LogLine logWs, "Clean_Combined_Metrics", "OK", "Removed rows: " & removed
+    Exit Sub
+
+Fail:
+    LogLine logWs, "Clean_Combined_Metrics", "Error", "Error " & Err.Number & ": " & Err.Description
+End Sub
+
+'===========================================================
 ' PART 2: SIMPLE COMPLIANCE (ROW LEVEL)
 '===========================================================
 Private Sub Build_SimpleCompliance_FromFolder(ByVal folderPath As String, ByVal logWs As Worksheet)
@@ -293,9 +344,9 @@ Private Sub Build_SimpleCompliance_FromFolder(ByVal folderPath As String, ByVal 
             End If
 
             Dim qidCol As Long, polSubCol As Long, lastRow As Long
-            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 20)
-            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 20)
-            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 20)
+            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 25)
+            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 25)
+            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 25)
 
             If qidCol = 0 Then
                 LogLine logWs, fileName, "Skipped", "Could not find 'Question ID' in row 3."
@@ -335,7 +386,7 @@ Private Sub Build_SimpleCompliance_FromFolder(ByVal folderPath As String, ByVal 
 
                     polSub = IIf(polSubCol > 0, Trim$(ws.Cells(r, polSubCol).Text), "")
                     raw = Trim$(ws.Cells(r, appCol).Text)
-                    comp = Normalize_YNRNA_to_Y_BlankToN(raw, qid)
+                    comp = NormalizeToYN_WithFlip(raw, qid)
 
                     outRow = outRow + 1
                     outWs.Cells(outRow, 1).Value = itFunc
@@ -375,11 +426,12 @@ FileError:
 End Sub
 
 '===========================================================
-' NEW STEP: CLEAN SIMPLE COMPLIANCE BEFORE SUMMARIES
-' Deletes rows where:
-'  - Question ID contains "row" (3.Row.14A etc.)
-'  - Data Class blank
-'  - Policy Sub-Domain blank
+' CLEAN: SIMPLE COMPLIANCE BEFORE SUMMARIES
+' Removes:
+'  - QID contains "row"
+'  - blank Data Class
+'  - blank Policy Sub-Domain
+'  - header/separator rows
 '===========================================================
 Private Sub Clean_Simple_Compliance(ByVal logWs As Worksheet)
     On Error GoTo Fail
@@ -398,28 +450,26 @@ Private Sub Clean_Simple_Compliance(ByVal logWs As Worksheet)
     removed = 0
 
     For r = lastRow To 2 Step -1
-        Dim dataClass As String, qid As String, polSub As String
-        dataClass = Trim$(CStr(ws.Cells(r, 3).Value))
+        Dim itf As String, app As String, dc As String, qid As String, psd As String
+        itf = LCase$(Trim$(CStr(ws.Cells(r, 1).Value)))
+        app = LCase$(Trim$(CStr(ws.Cells(r, 2).Value)))
+        dc = Trim$(CStr(ws.Cells(r, 3).Value))
         qid = Trim$(CStr(ws.Cells(r, 4).Value))
-        polSub = Trim$(CStr(ws.Cells(r, 5).Value))
+        psd = Trim$(CStr(ws.Cells(r, 5).Value))
 
-        If InStr(1, LCase$(qid), "row", vbTextCompare) > 0 Then
-            ws.Rows(r).Delete
-            removed = removed + 1
-            GoTo NextR
-        End If
+        'Header/separator style rows
+        If itf = "it function" Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+        If app = "application name" Or app = "application/site name" Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+        If LCase$(dc) = "data class" Or LCase$(dc) = "dataclass" Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
 
-        If Len(dataClass) = 0 Then
-            ws.Rows(r).Delete
-            removed = removed + 1
-            GoTo NextR
-        End If
+        'Remove fake QIDs like 3.Row.14A / 7.row.4
+        If InStr(1, LCase$(qid), "row", vbTextCompare) > 0 Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
 
-        If Len(polSub) = 0 Then
-            ws.Rows(r).Delete
-            removed = removed + 1
-            GoTo NextR
-        End If
+        'Blank Data Class
+        If Len(Trim$(dc)) = 0 Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+
+        'Blank Policy Sub-Domain
+        If Len(Trim$(psd)) = 0 Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
 
 NextR:
     Next r
@@ -432,7 +482,7 @@ Fail:
 End Sub
 
 '===========================================================
-' PART 3: APP + SUBDOMAIN & APP SUMMARY (FROM CLEAN SIMPLE COMPLIANCE)
+' PART 3: APP + SUBDOMAIN SUMMARY (IT FUNCTION FIRST)
 '===========================================================
 Private Sub Build_AppAndSubdomain_Summaries_FromSimpleCompliance(ByVal logWs As Worksheet)
     On Error GoTo Fail
@@ -453,7 +503,6 @@ Private Sub Build_AppAndSubdomain_Summaries_FromSimpleCompliance(ByVal logWs As 
         Exit Sub
     End If
 
-    'Now group by: IT Function + App Name + Policy Sub-Domain
     Dim dictY_AppSub As Object, dictN_AppSub As Object
     Dim dictY_App As Object, dictN_App As Object
     Set dictY_AppSub = CreateObject("Scripting.Dictionary")
@@ -464,15 +513,15 @@ Private Sub Build_AppAndSubdomain_Summaries_FromSimpleCompliance(ByVal logWs As 
     Dim r As Long
     For r = 2 To lastRow
         Dim itFunc As String, appName As String, subD As String, v As String
-        itFunc = Trim$(CStr(wsSrc.Cells(r, 1).Value)) 'IT Function
-        appName = Trim$(CStr(wsSrc.Cells(r, 2).Value)) 'App Name
-        subD = Trim$(CStr(wsSrc.Cells(r, 5).Value))    'Policy Sub-Domain
-        v = UCase$(Trim$(CStr(wsSrc.Cells(r, 6).Value))) 'Compliance (Y/N)
+        itFunc = Trim$(CStr(wsSrc.Cells(r, 1).Value))
+        appName = Trim$(CStr(wsSrc.Cells(r, 2).Value))
+        subD = Trim$(CStr(wsSrc.Cells(r, 5).Value))
+        v = UCase$(Trim$(CStr(wsSrc.Cells(r, 6).Value)))
 
         If Len(itFunc) = 0 Or Len(appName) = 0 Or Len(subD) = 0 Then GoTo NextR
         If v <> "Y" And v <> "N" Then GoTo NextR
 
-        'App-only summary still by App Name (unchanged)
+        'App-only summary (by App Name)
         If Not dictY_App.Exists(appName) Then
             dictY_App(appName) = 0
             dictN_App(appName) = 0
@@ -483,7 +532,7 @@ Private Sub Build_AppAndSubdomain_Summaries_FromSimpleCompliance(ByVal logWs As 
             dictN_App(appName) = CLng(dictN_App(appName)) + 1
         End If
 
-        'App-SubDomain now keyed by IT Function + App Name + SubDomain
+        'App-SubDomain summary key: IT Function + App + SubDomain
         Dim key As String
         key = itFunc & "||" & appName & "||" & subD
 
@@ -491,7 +540,6 @@ Private Sub Build_AppAndSubdomain_Summaries_FromSimpleCompliance(ByVal logWs As 
             dictY_AppSub(key) = 0
             dictN_AppSub(key) = 0
         End If
-
         If v = "Y" Then
             dictY_AppSub(key) = CLng(dictY_AppSub(key)) + 1
         Else
@@ -515,9 +563,9 @@ NextR:
         nCnt = CLng(dictN_AppSub(k))
         total = yCnt + nCnt
 
-        wsOut1.Cells(outRow, 1).Value = parts(0) 'IT Function
-        wsOut1.Cells(outRow, 2).Value = parts(1) 'App Name
-        wsOut1.Cells(outRow, 3).Value = parts(2) 'Policy Sub-Domain
+        wsOut1.Cells(outRow, 1).Value = parts(0)
+        wsOut1.Cells(outRow, 2).Value = parts(1)
+        wsOut1.Cells(outRow, 3).Value = parts(2)
         wsOut1.Cells(outRow, 4).Value = yCnt
         wsOut1.Cells(outRow, 5).Value = nCnt
         wsOut1.Cells(outRow, 6).Value = total
@@ -529,18 +577,7 @@ NextR:
     wsOut1.Columns("A:G").AutoFit
     wsOut1.Columns("G").NumberFormat = "0.00%"
 
-    'Optional: sort for readability (IT Function, App, SubDomain)
-    With wsOut1.Sort
-        .SortFields.Clear
-        .SortFields.Add Key:=wsOut1.Range("A2:A" & outRow - 1), Order:=xlAscending
-        .SortFields.Add Key:=wsOut1.Range("B2:B" & outRow - 1), Order:=xlAscending
-        .SortFields.Add Key:=wsOut1.Range("C2:C" & outRow - 1), Order:=xlAscending
-        .SetRange wsOut1.Range("A1:G" & outRow - 1)
-        .Header = xlYes
-        .Apply
-    End With
-
-    'App-only summary (unchanged)
+    'App Compliance Summary (by App Name)
     wsOut2.Range("A1:E1").Value = Array("App Name", "Total Y", "Total N", "Total Answered", "Compliance %")
     wsOut2.Rows(1).Font.Bold = True
 
@@ -563,7 +600,7 @@ NextR:
     wsOut2.Columns("A:E").AutoFit
     wsOut2.Columns("E").NumberFormat = "0.00%"
 
-    LogLine logWs, "Build_AppAndSubdomain_Summaries", "OK", "App-SubDomain now includes IT Function."
+    LogLine logWs, "Build_AppAndSubdomain_Summaries", "OK", "App-SubDomain includes IT Function."
     Exit Sub
 
 Fail:
@@ -686,10 +723,6 @@ Private Function NormalizeToYN_WithFlip(ByVal raw As String, Optional ByVal ques
     NormalizeToYN_WithFlip = "N"
 End Function
 
-Private Function Normalize_YNRNA_to_Y_BlankToN(ByVal raw As String, Optional ByVal questionId As String = "") As String
-    Normalize_YNRNA_to_Y_BlankToN = NormalizeToYN_WithFlip(raw, questionId)
-End Function
-
 '===========================================================
 ' TEMPLATE SHEET PICKER
 '===========================================================
@@ -711,7 +744,7 @@ Private Function GetTemplateSheet(ByVal wb As Workbook) As Worksheet
 
     Dim ws As Worksheet
     For Each ws In wb.Worksheets
-        If FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 25) > 0 Then
+        If FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 30) > 0 Then
             Set GetTemplateSheet = ws
             Exit Function
         End If
