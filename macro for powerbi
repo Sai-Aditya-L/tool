@@ -1,15 +1,20 @@
 Option Explicit
 
 '===========================================================
-' SINGLE ENTRY POINT
+' MAIN: RUN EVERYTHING
 '===========================================================
 Public Sub Run_All_PowerBI_Builds()
-    Const DEBUG_MODE As Boolean = True 'set False if you don't want Debug_N_Triggers
+    Const DEBUG_MODE As Boolean = True
 
     Dim folderPath As String
     folderPath = PickFolderSafe()
     If Len(folderPath) = 0 Then Exit Sub
     If Right$(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
+
+    Dim logWs As Worksheet
+    Set logWs = GetOrCreateSheet(ThisWorkbook, "Log")
+    EnsureLogHeader logWs
+    LogLine logWs, "Run_All_PowerBI_Builds", "Start", "Folder: " & folderPath
 
     Dim oldSU As Boolean, oldDA As Boolean, oldEE As Boolean
     oldSU = Application.ScreenUpdating
@@ -21,40 +26,34 @@ Public Sub Run_All_PowerBI_Builds()
     Application.DisplayAlerts = False
     Application.EnableEvents = False
 
-    '1) Combined Metrics
-    Build_CombinedMetrics_FromFolder_NoComments folderPath, DEBUG_MODE
+    Build_CombinedMetrics_FromFolder folderPath, DEBUG_MODE, logWs
+    Build_SimpleCompliance_FromFolder folderPath, logWs
+    Build_AppAndSubdomain_Summaries_FromSimpleCompliance logWs
+    Build_ITPolicy_Summary_FromSimpleCompliance logWs
 
-    '2) Simple Compliance
-    Build_Simple_Compliance_FromFolder_WithAppName folderPath
-
-    '3) App + Subdomain, and App-only compliance summaries (based on Simple Compliance)
-    Build_Compliance_Summaries_SimpleCompliance
-
-    '4) IT Function + Policy Domain/Sub-Domain summary (based on Simple Compliance)
-    Build_IT_PolicyDomain_Compliance_Summary
-
+    LogLine logWs, "Run_All_PowerBI_Builds", "OK", "Completed successfully."
+    MsgBox "All done ✅" & vbCrLf & _
+           "Built: Combined Metrics, Simple Compliance," & vbCrLf & _
+           "App-SubDomain Compliance, App Compliance Summary," & vbCrLf & _
+           "IT-Policy Compliance Summary.", vbInformation
 CleanExit:
     Application.ScreenUpdating = oldSU
     Application.DisplayAlerts = oldDA
     Application.EnableEvents = oldEE
-
-    MsgBox "All done!" & vbCrLf & _
-           "Built: Combined Metrics, Simple Compliance," & vbCrLf & _
-           "App-SubDomain Compliance, App Compliance Summary," & vbCrLf & _
-           "IT-Policy Compliance Summary.", vbInformation
     Exit Sub
 
 CleanFail:
-    LogLine GetOrCreateSheet(ThisWorkbook, "Log"), "Run_All_PowerBI_Builds", "Error", Err.Description
+    Dim msg As String
+    msg = "Error " & Err.Number & ": " & Err.Description
+    LogLine logWs, "Run_All_PowerBI_Builds", "Error", msg
+    MsgBox msg, vbCritical, "Macro failed"
     Resume CleanExit
 End Sub
 
 '===========================================================
-' 1) COMBINED METRICS
+' PART 1: COMBINED METRICS
 '===========================================================
-Private Sub Build_CombinedMetrics_FromFolder_NoComments(ByVal folderPath As String, ByVal DEBUG_MODE As Boolean)
-    Const TARGET_SHEET As String = "OutputTemplate-Power BI Upload"
-
+Private Sub Build_CombinedMetrics_FromFolder(ByVal folderPath As String, ByVal DEBUG_MODE As Boolean, ByVal logWs As Worksheet)
     Dim metricHeaders As Variant
     metricHeaders = Array( _
         "Access Control", _
@@ -66,50 +65,31 @@ Private Sub Build_CombinedMetrics_FromFolder_NoComments(ByVal folderPath As Stri
         "Secure Authentication", _
         "System Logging & Monitoring", _
         "System Security Testing", _
-        "Vulnerability management and Scanning", _
+        "Vulnerability management & Scanning", _
         "Disaster Recovery" _
     )
 
-    Dim fileName As String, fullPath As String
-    Dim wb As Workbook, ws As Worksheet
-    Dim outWs As Worksheet, logWs As Worksheet, dbgWs As Worksheet
-    Dim outRow As Long
-    Dim polSubCol As Long, qidCol As Long, lastRow As Long
-    Dim firstAppCol As Long, lastAppCol As Long, respCol As Long
-    Dim m As Long
-
-    Dim itFunc As String, appName As String, dataClass As String
-    Dim appId As String, daiId As String, numAsset As String
-
+    Dim outWs As Worksheet
     Set outWs = GetOrCreateSheet(ThisWorkbook, "Combined Metrics")
-    Set logWs = GetOrCreateSheet(ThisWorkbook, "Log")
-
     outWs.Cells.Clear
-    'don't hard-clear Log; append new run section
-    AppendLogHeader logWs, "Combined Metrics"
 
+    Dim dbgWs As Worksheet
     If DEBUG_MODE Then
         Set dbgWs = GetOrCreateSheet(ThisWorkbook, "Debug_N_Triggers")
         dbgWs.Cells.Clear
-        dbgWs.Range("A1:I1").Value = Array( _
-            "Source File", "IT Function", "App Name", "Metric (Policy Sub-Domain)", _
-            "Trigger Question ID", "Raw Response", "Normalized", "Sheet Row", "Notes" _
-        )
+        dbgWs.Range("A1:I1").Value = Array("Source File", "IT Function", "App Name", "Metric", "Trigger Question ID", "Raw Response", "Normalized", "Template Row", "Notes")
         dbgWs.Rows(1).Font.Bold = True
     End If
 
-    'Base headers
-    outWs.Cells(1, 1).Value = "IT Function"
-    outWs.Cells(1, 2).Value = "Application/Site Name"
-    outWs.Cells(1, 3).Value = "data class"
-    outWs.Cells(1, 4).Value = "Number of Asset"
+    'Headers
+    outWs.Range("A1:D1").Value = Array("IT Function", "Application/Site Name", "Data Class", "Number of Asset")
 
-    'Metric headers
+    Dim m As Long
     For m = LBound(metricHeaders) To UBound(metricHeaders)
         outWs.Cells(1, 5 + m).Value = metricHeaders(m)
     Next m
 
-    'Hidden helper cols
+    'Hidden helper columns after metrics
     Dim hiddenStartCol As Long
     hiddenStartCol = 5 + (UBound(metricHeaders) + 1)
     outWs.Cells(1, hiddenStartCol).Value = "App ID"
@@ -118,64 +98,63 @@ Private Sub Build_CombinedMetrics_FromFolder_NoComments(ByVal folderPath As Stri
 
     outWs.Rows(1).Font.Bold = True
     outWs.Columns.NumberFormat = "@"
-    outRow = 1
+
+    Dim fileName As String, fullPath As String
+    Dim wb As Workbook, ws As Worksheet
+    Dim outRow As Long: outRow = 1
 
     fileName = Dir(folderPath & "*.xls*")
     Do While Len(fileName) > 0
         fullPath = folderPath & fileName
-
         If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
             On Error GoTo FileError
 
             Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=True, UpdateLinks:=False)
 
-            Set ws = Nothing
-            On Error Resume Next
-            Set ws = wb.Worksheets(TARGET_SHEET)
-            On Error GoTo 0
-
+            Set ws = GetTemplateSheet(wb)
             If ws Is Nothing Then
-                LogLine logWs, fileName, "Skipped", "Sheet not found: " & TARGET_SHEET
+                LogLine logWs, fileName, "Skipped", "Template sheet not found."
                 GoTo CloseAndNext
             End If
 
-            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 7)
+            Dim polSubCol As Long, qidCol As Long, lastRow As Long
+            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 10)
             If polSubCol = 0 Then
-                LogLine logWs, fileName, "Skipped", "Could not find 'Policy Sub-Domain' in A3:G3."
+                LogLine logWs, fileName, "Skipped", "Could not find 'Policy Sub-Domain' in row 3."
                 GoTo CloseAndNext
             End If
 
-            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 7)
-            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 7)
-            If qidCol = 0 Then
-                LogLine logWs, fileName, "Warning", "Could not find 'Question ID' in A3:G3. Flip rules will NOT apply."
-            End If
+            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 10)
+            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 10)
 
             lastRow = ws.Cells(ws.Rows.Count, polSubCol).End(xlUp).Row
             If lastRow < 7 Then
-                LogLine logWs, fileName, "Skipped", "No question rows found (expected start around row 7)."
+                LogLine logWs, fileName, "Skipped", "No data rows found (expected from row 7)."
                 GoTo CloseAndNext
             End If
 
-            'App response columns start at H (col 8)
-            firstAppCol = 8
+            Dim firstAppCol As Long, lastAppCol As Long, respCol As Long
+            firstAppCol = 8 'H is typical start for app columns
             lastAppCol = ws.Cells(2, ws.Columns.Count).End(xlToLeft).Column
             If lastAppCol < firstAppCol Then
-                LogLine logWs, fileName, "Skipped", "No application columns found to the right of H2."
+                LogLine logWs, fileName, "Skipped", "No app columns found."
                 GoTo CloseAndNext
             End If
 
             For respCol = firstAppCol To lastAppCol
-                If ColumnIsComments(ws, respCol) Then GoTo NextApp
+                If IsCommentsColumn(ws, respCol) Then GoTo NextApp
+
+                Dim appName As String, itFunc As String, dataClass As String
+                Dim appId As String, daiId As String, numAsset As String
 
                 appName = Trim$(ws.Cells(2, respCol).Text)
                 If Len(appName) = 0 Then GoTo NextApp
 
                 itFunc = Trim$(ws.Cells(1, respCol).Text)
-                appId = Trim$(ws.Cells(4, respCol).Text)
                 dataClass = Trim$(ws.Cells(5, respCol).Text)
+                appId = Trim$(ws.Cells(4, respCol).Text)
                 daiId = Trim$(ws.Cells(6, respCol).Text)
-                numAsset = GetValueForLabel(ws, "Number of Asset", respCol, 1, 20, 8)
+                numAsset = GetValueForLabel(ws, "Number of Asset", respCol, 1, 30, 8)
 
                 outRow = outRow + 1
                 outWs.Cells(outRow, 1).Value = itFunc
@@ -184,20 +163,17 @@ Private Sub Build_CombinedMetrics_FromFolder_NoComments(ByVal folderPath As Stri
                 outWs.Cells(outRow, 4).Value = numAsset
 
                 For m = LBound(metricHeaders) To UBound(metricHeaders)
-                    Dim triggerQid As String, triggerRaw As String, triggerNorm As String
-                    Dim triggerRow As Long, metricYN As String
+                    Dim trigQid As String, trigRaw As String, trigNorm As String, trigRow As Long
+                    Dim yn As String
 
-                    metricYN = ComputeMetricYN_FlipQIDs_Debug( _
-                        ws:=ws, rStart:=7, rEnd:=lastRow, polSubCol:=polSubCol, qidCol:=qidCol, respCol:=respCol, _
-                        metricName:=CStr(metricHeaders(m)), _
-                        outTriggerQid:=triggerQid, outTriggerRaw:=triggerRaw, outTriggerNorm:=triggerNorm, outTriggerRow:=triggerRow _
-                    )
+                    yn = ComputeMetricYN(ws, 7, lastRow, polSubCol, qidCol, respCol, CStr(metricHeaders(m)), _
+                                        trigQid, trigRaw, trigNorm, trigRow)
 
-                    outWs.Cells(outRow, 5 + m).Value = metricYN
+                    outWs.Cells(outRow, 5 + m).Value = yn
 
                     If DEBUG_MODE Then
-                        If metricYN = "N" Then
-                            LogDebugTrigger dbgWs, fileName, itFunc, appName, CStr(metricHeaders(m)), triggerQid, triggerRaw, triggerNorm, triggerRow
+                        If yn = "N" Then
+                            LogDebug dbgWs, fileName, itFunc, appName, CStr(metricHeaders(m)), trigQid, trigRaw, trigNorm, trigRow
                         End If
                     End If
                 Next m
@@ -209,14 +185,14 @@ Private Sub Build_CombinedMetrics_FromFolder_NoComments(ByVal folderPath As Stri
 NextApp:
             Next respCol
 
-            LogLine logWs, fileName, "OK", "Imported to Combined Metrics."
+            LogLine logWs, fileName, "OK", "Combined Metrics updated."
 
 CloseAndNext:
             On Error Resume Next
             wb.Close SaveChanges:=False
             On Error GoTo 0
-            Set ws = Nothing
             Set wb = Nothing
+            Set ws = Nothing
         End If
 
         fileName = Dir()
@@ -224,220 +200,136 @@ CloseAndNext:
     Loop
 
     ApplyMetricsFormatting outWs, 1, outRow, 5, 5 + UBound(metricHeaders)
-
     outWs.Columns(hiddenStartCol).Hidden = True
     outWs.Columns(hiddenStartCol + 1).Hidden = True
     outWs.Columns(hiddenStartCol + 2).Hidden = True
-
     outWs.Columns.AutoFit
+
     If DEBUG_MODE Then dbgWs.Columns.AutoFit
     Exit Sub
 
 FileError:
-    LogLine logWs, fileName, "Error", Err.Description
+    LogLine logWs, fileName, "Error", "Error " & Err.Number & ": " & Err.Description
     On Error Resume Next
     If Not wb Is Nothing Then wb.Close SaveChanges:=False
     On Error GoTo 0
     Resume CloseAndNext
 End Sub
 
-Private Function ColumnIsComments(ByVal ws As Worksheet, ByVal col As Long) As Boolean
-    ColumnIsComments = (InStr(1, Canonical(ws.Cells(3, col).Text), "comments", vbTextCompare) > 0)
-End Function
-
-Private Function ComputeMetricYN_FlipQIDs_Debug(ByVal ws As Worksheet, ByVal rStart As Long, ByVal rEnd As Long, _
-                                               ByVal polSubCol As Long, ByVal qidCol As Long, ByVal respCol As Long, _
-                                               ByVal metricName As String, _
-                                               ByRef outTriggerQid As String, ByRef outTriggerRaw As String, _
-                                               ByRef outTriggerNorm As String, ByRef outTriggerRow As Long) As String
+Private Function ComputeMetricYN(ByVal ws As Worksheet, ByVal rStart As Long, ByVal rEnd As Long, _
+                                 ByVal polSubCol As Long, ByVal qidCol As Long, ByVal respCol As Long, _
+                                 ByVal metricName As String, _
+                                 ByRef outTriggerQid As String, ByRef outTriggerRaw As String, _
+                                 ByRef outTriggerNorm As String, ByRef outTriggerRow As Long) As String
     Dim r As Long
-    Dim keyMetric As String, keySub As String
-    Dim yn As String
-    Dim anyY As Boolean, anyN As Boolean
-    Dim qid As String
-    Dim raw As String
+    Dim anyY As Boolean
+    anyY = False
 
     outTriggerQid = "": outTriggerRaw = "": outTriggerNorm = "": outTriggerRow = 0
 
-    keyMetric = Canonical(metricName)
-    anyY = False: anyN = False
-
     For r = rStart To rEnd
-        keySub = Canonical(ws.Cells(r, polSubCol).Text)
-        If keySub = keyMetric Then
-            If qidCol > 0 Then qid = Trim$(CStr(ws.Cells(r, qidCol).Text)) Else qid = ""
+        If Canonical(ws.Cells(r, polSubCol).Text) = Canonical(metricName) Then
+            Dim qid As String, raw As String, yn As String
+            qid = IIf(qidCol > 0, Trim$(CStr(ws.Cells(r, qidCol).Text)), "")
             raw = CStr(ws.Cells(r, respCol).Text)
 
             yn = NormalizeToYN_WithFlip(raw, qid)
 
             If yn = "N" Then
-                anyN = True
                 outTriggerQid = qid
                 outTriggerRaw = Trim$(raw)
                 outTriggerNorm = "N"
                 outTriggerRow = r
-                Exit For
+                ComputeMetricYN = "N"
+                Exit Function
             ElseIf yn = "Y" Then
                 anyY = True
             End If
         End If
     Next r
 
-    If anyN Then
-        ComputeMetricYN_FlipQIDs_Debug = "N"
-    ElseIf anyY Then
-        ComputeMetricYN_FlipQIDs_Debug = "Y"
+    If anyY Then
+        ComputeMetricYN = "Y"
     Else
-        ComputeMetricYN_FlipQIDs_Debug = ""
+        ComputeMetricYN = ""
     End If
 End Function
 
-Private Function NormalizeToYN_WithFlip(ByVal raw As String, Optional ByVal questionId As String = "") As String
-    Dim respCanon As String
-    Dim q As String
-    Dim isFlip As Boolean
-
-    q = Canonical(questionId)
-    isFlip = (q = "sa010033" Or q = "sa010028")
-
-    If Len(Trim$(CStr(raw))) = 0 Then
-        NormalizeToYN_WithFlip = ""
-        Exit Function
-    End If
-
-    respCanon = Canonical(raw)
-
-    If respCanon = "notanswered" Or respCanon = "notanswer" Then
-        NormalizeToYN_WithFlip = "N": Exit Function
-    End If
-
-    If respCanon = "na" Or respCanon = "nr" Then
-        NormalizeToYN_WithFlip = "Y": Exit Function
-    End If
-
-    If respCanon = "yes" Or respCanon = "y" Then
-        NormalizeToYN_WithFlip = IIf(isFlip, "N", "Y")
-        Exit Function
-    End If
-
-    If respCanon = "no" Or respCanon = "n" Then
-        NormalizeToYN_WithFlip = IIf(isFlip, "Y", "N")
-        Exit Function
-    End If
-
-    NormalizeToYN_WithFlip = ""
-End Function
-
-Private Sub LogDebugTrigger(ByVal dbgWs As Worksheet, ByVal sourceFile As String, ByVal itFunc As String, _
-                           ByVal appName As String, ByVal metricName As String, ByVal triggerQid As String, _
-                           ByVal rawResp As String, ByVal norm As String, ByVal sheetRow As Long)
-    Dim lr As Long
-    lr = dbgWs.Cells(dbgWs.Rows.Count, "A").End(xlUp).Row + 1
-    dbgWs.Cells(lr, 1).Value = sourceFile
-    dbgWs.Cells(lr, 2).Value = itFunc
-    dbgWs.Cells(lr, 3).Value = appName
-    dbgWs.Cells(lr, 4).Value = metricName
-    dbgWs.Cells(lr, 5).Value = triggerQid
-    dbgWs.Cells(lr, 6).Value = rawResp
-    dbgWs.Cells(lr, 7).Value = norm
-    dbgWs.Cells(lr, 8).Value = sheetRow
-    dbgWs.Cells(lr, 9).Value = IIf(Len(triggerQid) = 0, "Question ID not found (qidCol missing?)", "")
-End Sub
-
 '===========================================================
-' 2) SIMPLE COMPLIANCE (row-level)
+' PART 2: SIMPLE COMPLIANCE (ROW LEVEL)
 '===========================================================
-Private Sub Build_Simple_Compliance_FromFolder_WithAppName(ByVal folderPath As String)
-    Const LABEL_COL As Long = 8        'H
-    Const APP_START_COL As Long = 9    'I
-    Const HEADER_ROW As Long = 3
-    Const DATA_START_ROW As Long = 7
-    Const TARGET_SHEET As String = "OutputTemplate-Power BI Upload"
+Private Sub Build_SimpleCompliance_FromFolder(ByVal folderPath As String, ByVal logWs As Worksheet)
+    Dim outWs As Worksheet
+    Set outWs = GetOrCreateSheet(ThisWorkbook, "Simple Compliance")
+    outWs.Cells.Clear
+
+    outWs.Range("A1:F1").Value = Array("IT Function", "App Name", "Data Class", "Question ID", "Policy Sub-Domain", "Compliance")
+    outWs.Rows(1).Font.Bold = True
+    outWs.Columns.NumberFormat = "@"
+
+    Dim outRow As Long: outRow = 1
 
     Dim fileName As String, fullPath As String
     Dim wb As Workbook, ws As Worksheet
-    Dim outWs As Worksheet, logWs As Worksheet
-    Dim outRow As Long
-    Dim lastAppCol As Long, appCol As Long
-    Dim lastRow As Long, r As Long
-    Dim qidCol As Long, polSubCol As Long
-
-    Dim itFunc As String, appName As String, dataClass As String
-    Dim qid As String, polSub As String
-    Dim rawResp As String, compYN As String
-
-    Set outWs = GetOrCreateSheet(ThisWorkbook, "Simple Compliance")
-    Set logWs = GetOrCreateSheet(ThisWorkbook, "Log")
-
-    outWs.Cells.Clear
-    AppendLogHeader logWs, "Simple Compliance"
-
-    outWs.Cells(1, 1).Value = "IT Function"
-    outWs.Cells(1, 2).Value = "App Name"
-    outWs.Cells(1, 3).Value = "Data Class"
-    outWs.Cells(1, 4).Value = "Question ID"
-    outWs.Cells(1, 5).Value = "Policy Sub-Domain"
-    outWs.Cells(1, 6).Value = "Compliance"
-    outWs.Rows(1).Font.Bold = True
-    outWs.Columns.NumberFormat = "@"
-    outRow = 1
 
     fileName = Dir(folderPath & "*.xls*")
     Do While Len(fileName) > 0
         fullPath = folderPath & fileName
-
         If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
             On Error GoTo FileError
 
             Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=True, UpdateLinks:=False)
 
-            Set ws = Nothing
-            On Error Resume Next
-            Set ws = wb.Worksheets(TARGET_SHEET)
-            On Error GoTo 0
-
+            Set ws = GetTemplateSheet(wb)
             If ws Is Nothing Then
-                LogLine logWs, fileName, "Skipped", "Sheet not found: " & TARGET_SHEET
+                LogLine logWs, fileName, "Skipped", "Template sheet not found."
                 GoTo CloseAndNext
             End If
 
-            qidCol = FindHeaderInRow(ws, HEADER_ROW, "Question ID", 1, 7)
-            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, HEADER_ROW, "QuestionID", 1, 7)
-
-            polSubCol = FindHeaderInRow(ws, HEADER_ROW, "Policy Sub-Domain", 1, 7)
+            Dim qidCol As Long, polSubCol As Long, lastRow As Long
+            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 10)
+            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 10)
+            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 10)
 
             If qidCol = 0 Then
-                LogLine logWs, fileName, "Skipped", "Could not find 'Question ID' in A3:G3."
+                LogLine logWs, fileName, "Skipped", "Could not find 'Question ID' in row 3."
                 GoTo CloseAndNext
             End If
 
             lastRow = ws.Cells(ws.Rows.Count, qidCol).End(xlUp).Row
-            If lastRow < DATA_START_ROW Then
-                LogLine logWs, fileName, "Skipped", "No question rows found (expected row 7+)."
+            If lastRow < 7 Then
+                LogLine logWs, fileName, "Skipped", "No data rows found (expected from row 7)."
                 GoTo CloseAndNext
             End If
 
+            Dim firstAppCol As Long, lastAppCol As Long, appCol As Long, r As Long
+            firstAppCol = 9 'I typical per your layout; if your file starts at H, still works if I is first app col
             lastAppCol = ws.Cells(2, ws.Columns.Count).End(xlToLeft).Column
-            If lastAppCol < APP_START_COL Then
-                LogLine logWs, fileName, "Skipped", "No app columns found to the right of H."
-                GoTo CloseAndNext
+            If lastAppCol < firstAppCol Then
+                'Fallback: try from H
+                firstAppCol = 8
+                If lastAppCol < firstAppCol Then
+                    LogLine logWs, fileName, "Skipped", "No app columns found."
+                    GoTo CloseAndNext
+                End If
             End If
 
-            For appCol = APP_START_COL To lastAppCol
+            For appCol = firstAppCol To lastAppCol
+                Dim itFunc As String, appName As String, dataClass As String
                 itFunc = Trim$(ws.Cells(1, appCol).Text)
                 appName = Trim$(ws.Cells(2, appCol).Text)
                 dataClass = Trim$(ws.Cells(5, appCol).Text)
 
-                If Len(itFunc) = 0 And Len(appName) = 0 And Len(dataClass) = 0 Then GoTo NextApp
+                If Len(appName) = 0 Then GoTo NextApp
 
-                For r = DATA_START_ROW To lastRow
+                For r = 7 To lastRow
+                    Dim qid As String, polSub As String, raw As String, comp As String
                     qid = Trim$(ws.Cells(r, qidCol).Text)
                     If Len(qid) = 0 Then GoTo NextRow
 
-                    polSub = IIf(polSubCol = 0, "", Trim$(ws.Cells(r, polSubCol).Text))
-                    rawResp = Trim$(ws.Cells(r, appCol).Text)
-
-                    compYN = Normalize_YNRNA_to_Y_BlankToN(rawResp, qid)
+                    polSub = IIf(polSubCol > 0, Trim$(ws.Cells(r, polSubCol).Text), "")
+                    raw = Trim$(ws.Cells(r, appCol).Text)
+                    comp = Normalize_YNRNA_to_Y_BlankToN(raw, qid)
 
                     outRow = outRow + 1
                     outWs.Cells(outRow, 1).Value = itFunc
@@ -445,20 +337,20 @@ Private Sub Build_Simple_Compliance_FromFolder_WithAppName(ByVal folderPath As S
                     outWs.Cells(outRow, 3).Value = dataClass
                     outWs.Cells(outRow, 4).Value = qid
                     outWs.Cells(outRow, 5).Value = polSub
-                    outWs.Cells(outRow, 6).Value = compYN
+                    outWs.Cells(outRow, 6).Value = comp
 NextRow:
                 Next r
 NextApp:
             Next appCol
 
-            LogLine logWs, fileName, "OK", "Processed to Simple Compliance."
+            LogLine logWs, fileName, "OK", "Simple Compliance updated."
 
 CloseAndNext:
             On Error Resume Next
             wb.Close SaveChanges:=False
             On Error GoTo 0
-            Set ws = Nothing
             Set wb = Nothing
+            Set ws = Nothing
         End If
 
         fileName = Dir()
@@ -469,74 +361,32 @@ CloseAndNext:
     Exit Sub
 
 FileError:
-    LogLine logWs, fileName, "Error", Err.Description
+    LogLine logWs, fileName, "Error", "Error " & Err.Number & ": " & Err.Description
     On Error Resume Next
     If Not wb Is Nothing Then wb.Close SaveChanges:=False
     On Error GoTo 0
     Resume CloseAndNext
 End Sub
 
-Private Function Normalize_YNRNA_to_Y_BlankToN(ByVal raw As String, Optional ByVal questionId As String = "") As String
-    Dim s As String
-    Dim isSpecial As Boolean
-    Dim q As String
-
-    q = Canonical(questionId)
-    isSpecial = (q = "sa010033" Or q = "sa010028")
-
-    s = LCase$(Trim$(raw))
-    s = Replace(s, vbCr, "")
-    s = Replace(s, vbLf, "")
-    s = Replace(s, " ", "")
-
-    If Len(s) = 0 Then Normalize_YNRNA_to_Y_BlankToN = "N": Exit Function
-    If s = "notanswered" Or s = "notanswer" Then Normalize_YNRNA_to_Y_BlankToN = "N": Exit Function
-
-    If isSpecial Then
-        If s = "y" Or s = "yes" Then Normalize_YNRNA_to_Y_BlankToN = "N": Exit Function
-        If s = "n" Or s = "no" Then Normalize_YNRNA_to_Y_BlankToN = "Y": Exit Function
-        If s = "na" Or s = "n/a" Or s = "n-a" Then Normalize_YNRNA_to_Y_BlankToN = "Y": Exit Function
-        If s = "nr" Or s = "n/r" Or s = "n-r" Then Normalize_YNRNA_to_Y_BlankToN = "Y": Exit Function
-        Normalize_YNRNA_to_Y_BlankToN = "N"
-        Exit Function
-    End If
-
-    If s = "y" Or s = "yes" Then Normalize_YNRNA_to_Y_BlankToN = "Y": Exit Function
-    If s = "n" Or s = "no" Then Normalize_YNRNA_to_Y_BlankToN = "N": Exit Function
-    If s = "na" Or s = "n/a" Or s = "n-a" Or s = "n/a-secomments" Then Normalize_YNRNA_to_Y_BlankToN = "Y": Exit Function
-    If s = "nr" Or s = "n/r" Or s = "n-r" Then Normalize_YNRNA_to_Y_BlankToN = "Y": Exit Function
-
-    Normalize_YNRNA_to_Y_BlankToN = "N"
-End Function
-
 '===========================================================
-' 3) APP + SUBDOMAIN + APP ONLY SUMMARIES (from Simple Compliance)
+' PART 3: APP + SUBDOMAIN SUMMARY (FROM SIMPLE COMPLIANCE)
 '===========================================================
-Private Sub Build_Compliance_Summaries_SimpleCompliance()
+Private Sub Build_AppAndSubdomain_Summaries_FromSimpleCompliance(ByVal logWs As Worksheet)
+    On Error GoTo Fail
+
     Dim wsSrc As Worksheet
+    Set wsSrc = ThisWorkbook.Worksheets("Simple Compliance")
+
     Dim wsOut1 As Worksheet, wsOut2 As Worksheet
-    Dim lastRow As Long, r As Long
-
-    Const SRC_SHEET As String = "Simple Compliance"
-    Const OUT_APP_SUB As String = "App-SubDomain Compliance"
-    Const OUT_APP_ONLY As String = "App Compliance Summary"
-    Const FIRST_DATA_ROW As Long = 2
-
-    Const COL_APP As Long = 2
-    Const COL_SUBDOMAIN As Long = 5
-    Const COL_COMPLIANCE As Long = 6
-
-    Set wsSrc = ThisWorkbook.Worksheets(SRC_SHEET)
-
-    Set wsOut1 = GetOrCreateSheet(ThisWorkbook, OUT_APP_SUB)
+    Set wsOut1 = GetOrCreateSheet(ThisWorkbook, "App-SubDomain Compliance")
+    Set wsOut2 = GetOrCreateSheet(ThisWorkbook, "App Compliance Summary")
     wsOut1.Cells.Clear
-
-    Set wsOut2 = GetOrCreateSheet(ThisWorkbook, OUT_APP_ONLY)
     wsOut2.Cells.Clear
 
-    lastRow = wsSrc.Cells(wsSrc.Rows.Count, COL_APP).End(xlUp).Row
-    If lastRow < FIRST_DATA_ROW Then
-        MsgBox "No data found under App Name (Column B) in '" & SRC_SHEET & "'.", vbExclamation
+    Dim lastRow As Long
+    lastRow = wsSrc.Cells(wsSrc.Rows.Count, "B").End(xlUp).Row
+    If lastRow < 2 Then
+        LogLine logWs, "Build_AppAndSubdomain_Summaries", "Skipped", "No data in Simple Compliance."
         Exit Sub
     End If
 
@@ -547,55 +397,53 @@ Private Sub Build_Compliance_Summaries_SimpleCompliance()
     Set dictY_App = CreateObject("Scripting.Dictionary")
     Set dictN_App = CreateObject("Scripting.Dictionary")
 
-    Dim appName As String, subDomain As String, v As String, key As String
+    Dim r As Long
+    For r = 2 To lastRow
+        Dim appName As String, subD As String, v As String
+        appName = Trim$(CStr(wsSrc.Cells(r, 2).Value))
+        subD = Trim$(CStr(wsSrc.Cells(r, 5).Value))
+        v = UCase$(Trim$(CStr(wsSrc.Cells(r, 6).Value)))
 
-    For r = FIRST_DATA_ROW To lastRow
-        appName = Trim$(CStr(wsSrc.Cells(r, COL_APP).Value))
-        subDomain = Trim$(CStr(wsSrc.Cells(r, COL_SUBDOMAIN).Value))
-        v = UCase$(Trim$(CStr(wsSrc.Cells(r, COL_COMPLIANCE).Value)))
+        If Len(appName) = 0 Then GoTo NextR
+        If v <> "Y" And v <> "N" Then GoTo NextR
 
-        If Len(appName) > 0 Then
-            If Not dictY_App.Exists(appName) Then
-                dictY_App(appName) = 0
-                dictN_App(appName) = 0
+        If Not dictY_App.Exists(appName) Then
+            dictY_App(appName) = 0
+            dictN_App(appName) = 0
+        End If
+
+        If v = "Y" Then
+            dictY_App(appName) = CLng(dictY_App(appName)) + 1
+        Else
+            dictN_App(appName) = CLng(dictN_App(appName)) + 1
+        End If
+
+        If Len(subD) > 0 Then
+            Dim key As String
+            key = appName & "||" & subD
+            If Not dictY_AppSub.Exists(key) Then
+                dictY_AppSub(key) = 0
+                dictN_AppSub(key) = 0
             End If
-
             If v = "Y" Then
-                dictY_App(appName) = CLng(dictY_App(appName)) + 1
-            ElseIf v = "N" Then
-                dictN_App(appName) = CLng(dictN_App(appName)) + 1
-            End If
-
-            If Len(subDomain) > 0 Then
-                key = appName & "||" & subDomain
-                If Not dictY_AppSub.Exists(key) Then
-                    dictY_AppSub(key) = 0
-                    dictN_AppSub(key) = 0
-                End If
-
-                If v = "Y" Then
-                    dictY_AppSub(key) = CLng(dictY_AppSub(key)) + 1
-                ElseIf v = "N" Then
-                    dictN_AppSub(key) = CLng(dictN_AppSub(key)) + 1
-                End If
+                dictY_AppSub(key) = CLng(dictY_AppSub(key)) + 1
+            Else
+                dictN_AppSub(key) = CLng(dictN_AppSub(key)) + 1
             End If
         End If
+
+NextR:
     Next r
 
-    'Output 1
-    wsOut1.Range("A1").Value = "App Name"
-    wsOut1.Range("B1").Value = "Policy Sub-Domain"
-    wsOut1.Range("C1").Value = "Total Y"
-    wsOut1.Range("D1").Value = "Total N"
-    wsOut1.Range("E1").Value = "Total Answered (Y+N)"
-    wsOut1.Range("F1").Value = "Compliance % (Y/(Y+N))"
+    'Out 1: App-SubDomain
+    wsOut1.Range("A1:F1").Value = Array("App Name", "Policy Sub-Domain", "Total Y", "Total N", "Total Answered", "Compliance %")
+    wsOut1.Rows(1).Font.Bold = True
 
-    Dim outRow As Long, k As Variant, parts() As String
-    Dim yCnt As Long, nCnt As Long, total As Long
-    outRow = 2
-
+    Dim outRow As Long: outRow = 2
+    Dim k As Variant, parts() As String
     For Each k In dictY_AppSub.Keys
         parts = Split(CStr(k), "||")
+        Dim yCnt As Long, nCnt As Long, total As Long
         yCnt = CLng(dictY_AppSub(k))
         nCnt = CLng(dictN_AppSub(k))
         total = yCnt + nCnt
@@ -606,160 +454,256 @@ Private Sub Build_Compliance_Summaries_SimpleCompliance()
         wsOut1.Cells(outRow, 4).Value = nCnt
         wsOut1.Cells(outRow, 5).Value = total
         wsOut1.Cells(outRow, 6).Value = IIf(total > 0, yCnt / total, 0)
-
         outRow = outRow + 1
     Next k
+    wsOut1.Columns("A:F").AutoFit
+    wsOut1.Columns("F").NumberFormat = "0.00%"
 
-    With wsOut1
-        .Rows(1).Font.Bold = True
-        .Columns("A:F").AutoFit
-        .Columns("F").NumberFormat = "0.00%"
-        .Range("A1:F" & outRow - 1).Sort Key1:=.Range("A1"), Order1:=xlAscending, _
-                                         Key2:=.Range("B1"), Order2:=xlAscending, Header:=xlYes
-    End With
-
-    'Output 2
-    wsOut2.Range("A1").Value = "App Name"
-    wsOut2.Range("B1").Value = "Total Y"
-    wsOut2.Range("C1").Value = "Total N"
-    wsOut2.Range("D1").Value = "Total Answered (Y+N)"
-    wsOut2.Range("E1").Value = "Compliance % (Y/(Y+N))"
+    'Out 2: App only
+    wsOut2.Range("A1:E1").Value = Array("App Name", "Total Y", "Total N", "Total Answered", "Compliance %")
+    wsOut2.Rows(1).Font.Bold = True
 
     outRow = 2
     For Each k In dictY_App.Keys
-        yCnt = CLng(dictY_App(k))
-        nCnt = CLng(dictN_App(k))
-        total = yCnt + nCnt
+        Dim yA As Long, nA As Long, tA As Long
+        yA = CLng(dictY_App(k))
+        nA = CLng(dictN_App(k))
+        tA = yA + nA
 
         wsOut2.Cells(outRow, 1).Value = CStr(k)
-        wsOut2.Cells(outRow, 2).Value = yCnt
-        wsOut2.Cells(outRow, 3).Value = nCnt
-        wsOut2.Cells(outRow, 4).Value = total
-        wsOut2.Cells(outRow, 5).Value = IIf(total > 0, yCnt / total, 0)
-
+        wsOut2.Cells(outRow, 2).Value = yA
+        wsOut2.Cells(outRow, 3).Value = nA
+        wsOut2.Cells(outRow, 4).Value = tA
+        wsOut2.Cells(outRow, 5).Value = IIf(tA > 0, yA / tA, 0)
         outRow = outRow + 1
     Next k
+    wsOut2.Columns("A:E").AutoFit
+    wsOut2.Columns("E").NumberFormat = "0.00%"
 
-    With wsOut2
-        .Rows(1).Font.Bold = True
-        .Columns("A:E").AutoFit
-        .Columns("E").NumberFormat = "0.00%"
-        .Range("A1:E" & outRow - 1).Sort Key1:=.Range("A1"), Order1:=xlAscending, Header:=xlYes
-    End With
+    LogLine logWs, "Build_AppAndSubdomain_Summaries", "OK", "Summaries generated."
+    Exit Sub
+
+Fail:
+    LogLine logWs, "Build_AppAndSubdomain_Summaries", "Error", "Error " & Err.Number & ": " & Err.Description
 End Sub
 
 '===========================================================
-' 4) IT FUNCTION + POLICY DOMAIN/SUBDOMAIN SUMMARY (from Simple Compliance)
+' PART 4: IT FUNCTION + POLICY (SUB)DOMAIN SUMMARY
 '===========================================================
-Private Sub Build_IT_PolicyDomain_Compliance_Summary()
-    Dim wsSrc As Worksheet, wsOut As Worksheet
-    Dim lastRow As Long, r As Long
-    Dim colIT As Long, colPolicy As Long, colCompliance As Long
-    Dim itFunc As String, policyDom As String, comp As String
-    Dim key As String
+Private Sub Build_ITPolicy_Summary_FromSimpleCompliance(ByVal logWs As Worksheet)
+    On Error GoTo Fail
 
+    Dim wsSrc As Worksheet
     Set wsSrc = ThisWorkbook.Worksheets("Simple Compliance")
 
-    colIT = FindColumn(wsSrc, "IT Function")
-    colCompliance = FindColumn(wsSrc, "Compliance")
-
-    colPolicy = FindColumn(wsSrc, "Policy Domain")
-    If colPolicy = 0 Then colPolicy = FindColumn(wsSrc, "Policy Sub-Domain")
-    If colPolicy = 0 Then
-        MsgBox "Could not find 'Policy Domain' or 'Policy Sub-Domain' column.", vbCritical
-        Exit Sub
-    End If
-
-    If colIT = 0 Or colCompliance = 0 Then
-        MsgBox "Could not find required columns. Need 'IT Function' and 'Compliance'.", vbCritical
-        Exit Sub
-    End If
-
-    lastRow = wsSrc.Cells(wsSrc.Rows.Count, colIT).End(xlUp).Row
-    If lastRow < 2 Then
-        MsgBox "No data rows found.", vbInformation
-        Exit Sub
-    End If
-
+    Dim wsOut As Worksheet
     Set wsOut = GetOrCreateSheet(ThisWorkbook, "IT-Policy Compliance Summary")
     wsOut.Cells.Clear
 
-    Dim dictY As Object, dictN As Object
+    wsOut.Range("A1:F1").Value = Array("IT Function", "Policy", "Total Y", "Total N", "Total Answered", "Compliance %")
+    wsOut.Rows(1).Font.Bold = True
+
+    Dim lastRow As Long
+    lastRow = wsSrc.Cells(wsSrc.Rows.Count, "A").End(xlUp).Row
+    If lastRow < 2 Then
+        LogLine logWs, "Build_ITPolicy_Summary", "Skipped", "No data in Simple Compliance."
+        Exit Sub
+    End If
+
+    Dim dictY As Object, dictN As Object, dictAll As Object
     Set dictY = CreateObject("Scripting.Dictionary")
     Set dictN = CreateObject("Scripting.Dictionary")
+    Set dictAll = CreateObject("Scripting.Dictionary")
 
+    Dim r As Long
     For r = 2 To lastRow
-        itFunc = Trim(CStr(wsSrc.Cells(r, colIT).Value))
-        policyDom = Trim(CStr(wsSrc.Cells(r, colPolicy).Value))
-        comp = UCase$(Trim(CStr(wsSrc.Cells(r, colCompliance).Value)))
+        Dim itFunc As String, policy As String, comp As String
+        itFunc = Trim$(CStr(wsSrc.Cells(r, 1).Value))
+        policy = Trim$(CStr(wsSrc.Cells(r, 5).Value)) 'Policy Sub-Domain column in Simple Compliance
+        comp = UCase$(Trim$(CStr(wsSrc.Cells(r, 6).Value)))
 
-        If Len(itFunc) = 0 Or Len(policyDom) = 0 Then GoTo NextRow
-        If comp = "YES" Then comp = "Y"
-        If comp = "NO" Then comp = "N"
-        If comp <> "Y" And comp <> "N" Then GoTo NextRow
+        If Len(itFunc) = 0 Or Len(policy) = 0 Then GoTo NextR
+        If comp <> "Y" And comp <> "N" Then GoTo NextR
 
-        key = itFunc & "||" & policyDom
+        Dim key As String
+        key = itFunc & "||" & policy
+        dictAll(key) = True
+
         If comp = "Y" Then
             dictY(key) = NzLong(dictY, key) + 1
         Else
             dictN(key) = NzLong(dictN, key) + 1
         End If
-NextRow:
+NextR:
     Next r
 
-    With wsOut
-        .Range("A1").Value = "IT Function"
-        .Range("B1").Value = "Policy Domain"
-        .Range("C1").Value = "Total Y"
-        .Range("D1").Value = "Total N"
-        .Range("E1").Value = "Total Answered (Y+N)"
-        .Range("F1").Value = "Compliance % (Y/(Y+N))"
-        .Rows(1).Font.Bold = True
-    End With
-
-    Dim dictAll As Object: Set dictAll = CreateObject("Scripting.Dictionary")
-    Dim k As Variant
-    For Each k In dictY.Keys: dictAll(k) = True: Next k
-    For Each k In dictN.Keys: dictAll(k) = True: Next k
-
     Dim outRow As Long: outRow = 2
-    Dim yCnt As Long, nCnt As Long, totalCnt As Long
-    Dim parts() As String
-
+    Dim k As Variant, parts() As String
     For Each k In dictAll.Keys
         parts = Split(CStr(k), "||")
-        itFunc = parts(0)
-        policyDom = parts(1)
-
+        Dim yCnt As Long, nCnt As Long, total As Long
         yCnt = NzLong(dictY, k)
         nCnt = NzLong(dictN, k)
-        totalCnt = yCnt + nCnt
+        total = yCnt + nCnt
 
-        wsOut.Cells(outRow, 1).Value = itFunc
-        wsOut.Cells(outRow, 2).Value = policyDom
+        wsOut.Cells(outRow, 1).Value = parts(0)
+        wsOut.Cells(outRow, 2).Value = parts(1)
         wsOut.Cells(outRow, 3).Value = yCnt
         wsOut.Cells(outRow, 4).Value = nCnt
-        wsOut.Cells(outRow, 5).Value = totalCnt
-        wsOut.Cells(outRow, 6).Value = IIf(totalCnt > 0, yCnt / totalCnt, 0)
+        wsOut.Cells(outRow, 5).Value = total
+        wsOut.Cells(outRow, 6).Value = IIf(total > 0, yCnt / total, 0)
 
         outRow = outRow + 1
     Next k
 
-    With wsOut
-        .Columns("A:F").EntireColumn.AutoFit
-        .Columns("F").NumberFormat = "0.00%"
-        .Range("A1:F1").AutoFilter
-    End With
+    wsOut.Columns("A:F").AutoFit
+    wsOut.Columns("F").NumberFormat = "0.00%"
+
+    LogLine logWs, "Build_ITPolicy_Summary", "OK", "IT-Policy summary generated."
+    Exit Sub
+
+Fail:
+    LogLine logWs, "Build_ITPolicy_Summary", "Error", "Error " & Err.Number & ": " & Err.Description
 End Sub
 
 '===========================================================
-' SHARED HELPERS (single definitions to avoid collisions)
+' NORMALIZATION RULES
+' - Treat NA/NR as Y
+' - Treat blank / Not Answered as N
+' - Flip logic for SA.010.033 and SA.010.028 (Y becomes N, N becomes Y; NA/NR remain Y)
+'===========================================================
+Private Function NormalizeToYN_WithFlip(ByVal raw As String, Optional ByVal questionId As String = "") As String
+    Dim s As String
+    s = LCase$(Trim$(CStr(raw)))
+    s = Replace(s, vbCr, "")
+    s = Replace(s, vbLf, "")
+    s = Replace(s, " ", "")
+
+    If Len(s) = 0 Then NormalizeToYN_WithFlip = "N": Exit Function
+    If s = "notanswered" Or s = "notanswer" Then NormalizeToYN_WithFlip = "N": Exit Function
+
+    If s = "na" Or s = "n/a" Or s = "n-a" Then NormalizeToYN_WithFlip = "Y": Exit Function
+    If s = "nr" Or s = "n/r" Or s = "n-r" Then NormalizeToYN_WithFlip = "Y": Exit Function
+
+    Dim q As String
+    q = Canonical(questionId)
+
+    Dim isFlip As Boolean
+    isFlip = (q = "sa010033" Or q = "sa010028")
+
+    If s = "y" Or s = "yes" Then
+        NormalizeToYN_WithFlip = IIf(isFlip, "N", "Y")
+        Exit Function
+    End If
+
+    If s = "n" Or s = "no" Then
+        NormalizeToYN_WithFlip = IIf(isFlip, "Y", "N")
+        Exit Function
+    End If
+
+    'Default if unknown text
+    NormalizeToYN_WithFlip = "N"
+End Function
+
+Private Function Normalize_YNRNA_to_Y_BlankToN(ByVal raw As String, Optional ByVal questionId As String = "") As String
+    'Simple Compliance uses same logic as above (returns Y or N)
+    Normalize_YNRNA_to_Y_BlankToN = NormalizeToYN_WithFlip(raw, questionId)
+End Function
+
+'===========================================================
+' TEMPLATE SHEET PICKER
+' Tries common names; falls back to scanning for "Policy Sub-Domain" on row 3.
+'===========================================================
+Private Function GetTemplateSheet(ByVal wb As Workbook) As Worksheet
+    Dim tryNames As Variant
+    tryNames = Array( _
+        "OutputTemplate- Power BI Upload", _
+        "OutputTemplate-Power BI Upload", _
+        "OutputTemplate - Power BI Upload", _
+        "OutputTemplate-Power BI Upload " _
+    )
+
+    Dim i As Long
+    For i = LBound(tryNames) To UBound(tryNames)
+        On Error Resume Next
+        Set GetTemplateSheet = wb.Worksheets(CStr(tryNames(i)))
+        On Error GoTo 0
+        If Not GetTemplateSheet Is Nothing Then Exit Function
+    Next i
+
+    'Fallback scan
+    Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        If FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 20) > 0 Then
+            Set GetTemplateSheet = ws
+            Exit Function
+        End If
+    Next ws
+
+    Set GetTemplateSheet = Nothing
+End Function
+
+'===========================================================
+' DEBUG LOGGING
+'===========================================================
+Private Sub LogDebug(ByVal dbgWs As Worksheet, ByVal sourceFile As String, ByVal itFunc As String, _
+                    ByVal appName As String, ByVal metricName As String, ByVal trigQid As String, _
+                    ByVal rawResp As String, ByVal norm As String, ByVal templateRow As Long)
+    Dim lr As Long
+    lr = dbgWs.Cells(dbgWs.Rows.Count, "A").End(xlUp).Row + 1
+    dbgWs.Cells(lr, 1).Value = sourceFile
+    dbgWs.Cells(lr, 2).Value = itFunc
+    dbgWs.Cells(lr, 3).Value = appName
+    dbgWs.Cells(lr, 4).Value = metricName
+    dbgWs.Cells(lr, 5).Value = trigQid
+    dbgWs.Cells(lr, 6).Value = rawResp
+    dbgWs.Cells(lr, 7).Value = norm
+    dbgWs.Cells(lr, 8).Value = templateRow
+    dbgWs.Cells(lr, 9).Value = IIf(Len(trigQid) = 0, "Question ID column not found", "")
+End Sub
+
+'===========================================================
+' FORMATTING
+'===========================================================
+Private Sub ApplyMetricsFormatting(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal lastDataRow As Long, _
+                                  ByVal metricsStartCol As Long, ByVal metricsEndCol As Long)
+    If lastDataRow < headerRow + 1 Then Exit Sub
+
+    With ws.Range(ws.Cells(headerRow, 1), ws.Cells(headerRow, metricsEndCol))
+        .Interior.Color = RGB(0, 51, 102)
+        .Font.Color = RGB(255, 255, 255)
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+    End With
+
+    Dim rng As Range
+    Set rng = ws.Range(ws.Cells(headerRow + 1, metricsStartCol), ws.Cells(lastDataRow, metricsEndCol))
+    rng.FormatConditions.Delete
+    rng.HorizontalAlignment = xlCenter
+
+    With rng.FormatConditions.Add(Type:=xlCellValue, Operator:=xlEqual, Formula1:="=""Y""")
+        .Interior.Color = RGB(0, 176, 80)
+        .Font.Color = RGB(255, 255, 255)
+        .Font.Bold = True
+    End With
+
+    With rng.FormatConditions.Add(Type:=xlCellValue, Operator:=xlEqual, Formula1:="=""N""")
+        .Interior.Color = RGB(255, 255, 255)
+        .Font.Color = RGB(0, 0, 0)
+        .Font.Bold = True
+    End With
+
+    ws.Range(ws.Cells(headerRow, 1), ws.Cells(lastDataRow, metricsEndCol)).Borders.LineStyle = xlContinuous
+End Sub
+
+'===========================================================
+' HELPERS
 '===========================================================
 Private Function PickFolderSafe() As String
     On Error GoTo Fallback
     Dim fd As FileDialog
     Set fd = Application.FileDialog(msoFileDialogFolderPicker)
-    fd.Title = "Select folder containing Excel files"
+    fd.Title = "Select folder containing the assessment Excel files"
     If fd.Show = -1 Then
         PickFolderSafe = fd.SelectedItems(1)
     Else
@@ -767,7 +711,7 @@ Private Function PickFolderSafe() As String
     End If
     Exit Function
 Fallback:
-    PickFolderSafe = InputBox("Paste the full folder path that contains the Excel files:", "Folder Path")
+    PickFolderSafe = InputBox("Paste the full folder path:", "Folder Path")
 End Function
 
 Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
@@ -780,26 +724,17 @@ Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As Strin
     End If
 End Function
 
-Private Sub AppendLogHeader(ByVal logWs As Worksheet, ByVal sectionName As String)
-    Dim lr As Long
-    lr = logWs.Cells(logWs.Rows.Count, "A").End(xlUp).Row
-    If lr = 1 And Len(Trim$(CStr(logWs.Cells(1, 1).Value))) = 0 Then lr = 0
-
-    If lr = 0 Then
-        logWs.Range("A1:C1").Value = Array("File", "Status", "Notes")
+Private Sub EnsureLogHeader(ByVal logWs As Worksheet)
+    If Len(Trim$(CStr(logWs.Cells(1, 1).Value))) = 0 Then
+        logWs.Range("A1:C1").Value = Array("File/Proc", "Status", "Notes")
         logWs.Rows(1).Font.Bold = True
-        lr = 1
     End If
-
-    lr = lr + 2
-    logWs.Cells(lr, 1).Value = "=== " & sectionName & " (" & Format(Now, "yyyy-mm-dd hh:nn:ss") & ") ==="
-    logWs.Cells(lr, 1).Font.Bold = True
 End Sub
 
-Private Sub LogLine(ByVal logWs As Worksheet, ByVal fileName As String, ByVal status As String, ByVal notes As String)
+Private Sub LogLine(ByVal logWs As Worksheet, ByVal fileOrProc As String, ByVal status As String, ByVal notes As String)
     Dim lr As Long
     lr = logWs.Cells(logWs.Rows.Count, "A").End(xlUp).Row + 1
-    logWs.Cells(lr, 1).Value = fileName
+    logWs.Cells(lr, 1).Value = fileOrProc
     logWs.Cells(lr, 2).Value = status
     logWs.Cells(lr, 3).Value = notes
 End Sub
@@ -816,6 +751,22 @@ Private Function FindHeaderInRow(ByVal ws As Worksheet, ByVal headerRow As Long,
     FindHeaderInRow = 0
 End Function
 
+Private Function Canonical(ByVal s As String) As String
+    Dim i As Long, ch As String, out As String
+    s = LCase$(Trim$(CStr(s)))
+    out = ""
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If (ch >= "a" And ch <= "z") Or (ch >= "0" And ch <= "9") Then out = out & ch
+    Next i
+    Canonical = out
+End Function
+
+Private Function IsCommentsColumn(ByVal ws As Worksheet, ByVal col As Long) As Boolean
+    'Some templates have "Comments" as a pseudo column header in row 3
+    IsCommentsColumn = (InStr(1, Canonical(ws.Cells(3, col).Text), "comments", vbTextCompare) > 0)
+End Function
+
 Private Function GetValueForLabel(ByVal ws As Worksheet, ByVal labelText As String, ByVal appCol As Long, _
                                   ByVal rowStart As Long, ByVal rowEnd As Long, ByVal labelCol As Long) As String
     Dim r As Long
@@ -828,66 +779,7 @@ Private Function GetValueForLabel(ByVal ws As Worksheet, ByVal labelText As Stri
     GetValueForLabel = ""
 End Function
 
-Private Sub ApplyMetricsFormatting(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal lastDataRow As Long, _
-                                  ByVal metricsStartCol As Long, ByVal metricsEndCol As Long)
-    If lastDataRow < headerRow + 1 Then Exit Sub
-
-    With ws.Range(ws.Cells(headerRow, 1), ws.Cells(headerRow, metricsEndCol))
-        .Interior.Color = RGB(0, 51, 102)
-        .Font.Color = RGB(255, 255, 255)
-        .Font.Bold = True
-        .HorizontalAlignment = xlCenter
-    End With
-
-    With ws.Range(ws.Cells(headerRow, 1), ws.Cells(lastDataRow, metricsEndCol))
-        .Borders.LineStyle = xlContinuous
-        .Borders.Weight = xlThin
-    End With
-
-    Dim rng As Range
-    Set rng = ws.Range(ws.Cells(headerRow + 1, metricsStartCol), ws.Cells(lastDataRow, metricsEndCol))
-    rng.FormatConditions.Delete
-
-    With rng.FormatConditions.Add(Type:=xlCellValue, Operator:=xlEqual, Formula1:="=""Y""")
-        .Interior.Color = RGB(0, 176, 80)
-        .Font.Color = RGB(255, 255, 255)
-        .Font.Bold = True
-    End With
-
-    With rng.FormatConditions.Add(Type:=xlCellValue, Operator:=xlEqual, Formula1:="=""N""")
-        .Interior.Color = RGB(255, 255, 255)
-        .Font.Color = RGB(0, 0, 0)
-        .Font.Bold = True
-    End With
-
-    rng.HorizontalAlignment = xlCenter
-End Sub
-
-Private Function Canonical(ByVal s As String) As String
-    Dim i As Long, ch As String, out As String
-    s = LCase$(Trim$(CStr(s)))
-    out = ""
-    For i = 1 To Len(s)
-        ch = Mid$(s, i, 1)
-        If (ch >= "a" And ch <= "z") Or (ch >= "0" And ch <= "9") Then out = out & ch
-    Next i
-    Canonical = out
-End Function
-
-Private Function FindColumn(ws As Worksheet, headerName As String) As Long
-    Dim lastCol As Long, c As Long
-    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
-
-    For c = 1 To lastCol
-        If UCase$(Trim$(CStr(ws.Cells(1, c).Value))) = UCase$(headerName) Then
-            FindColumn = c
-            Exit Function
-        End If
-    Next c
-    FindColumn = 0
-End Function
-
-Private Function NzLong(dict As Object, ByVal key As Variant) As Long
+Private Function NzLong(ByVal dict As Object, ByVal key As Variant) As Long
     If dict Is Nothing Then
         NzLong = 0
     ElseIf dict.Exists(key) Then
