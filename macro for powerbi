@@ -453,6 +453,7 @@ Private Sub Build_AppAndSubdomain_Summaries_FromSimpleCompliance(ByVal logWs As 
         Exit Sub
     End If
 
+    'Now group by: IT Function + App Name + Policy Sub-Domain
     Dim dictY_AppSub As Object, dictN_AppSub As Object
     Dim dictY_App As Object, dictN_App As Object
     Set dictY_AppSub = CreateObject("Scripting.Dictionary")
@@ -462,64 +463,84 @@ Private Sub Build_AppAndSubdomain_Summaries_FromSimpleCompliance(ByVal logWs As 
 
     Dim r As Long
     For r = 2 To lastRow
-        Dim appName As String, subD As String, v As String
-        appName = Trim$(CStr(wsSrc.Cells(r, 2).Value))
-        subD = Trim$(CStr(wsSrc.Cells(r, 5).Value))
-        v = UCase$(Trim$(CStr(wsSrc.Cells(r, 6).Value)))
+        Dim itFunc As String, appName As String, subD As String, v As String
+        itFunc = Trim$(CStr(wsSrc.Cells(r, 1).Value)) 'IT Function
+        appName = Trim$(CStr(wsSrc.Cells(r, 2).Value)) 'App Name
+        subD = Trim$(CStr(wsSrc.Cells(r, 5).Value))    'Policy Sub-Domain
+        v = UCase$(Trim$(CStr(wsSrc.Cells(r, 6).Value))) 'Compliance (Y/N)
 
-        If Len(appName) = 0 Then GoTo NextR
+        If Len(itFunc) = 0 Or Len(appName) = 0 Or Len(subD) = 0 Then GoTo NextR
         If v <> "Y" And v <> "N" Then GoTo NextR
 
+        'App-only summary still by App Name (unchanged)
         If Not dictY_App.Exists(appName) Then
             dictY_App(appName) = 0
             dictN_App(appName) = 0
         End If
-
         If v = "Y" Then
             dictY_App(appName) = CLng(dictY_App(appName)) + 1
         Else
             dictN_App(appName) = CLng(dictN_App(appName)) + 1
         End If
 
-        If Len(subD) > 0 Then
-            Dim key As String
-            key = appName & "||" & subD
-            If Not dictY_AppSub.Exists(key) Then
-                dictY_AppSub(key) = 0
-                dictN_AppSub(key) = 0
-            End If
-            If v = "Y" Then
-                dictY_AppSub(key) = CLng(dictY_AppSub(key)) + 1
-            Else
-                dictN_AppSub(key) = CLng(dictN_AppSub(key)) + 1
-            End If
+        'App-SubDomain now keyed by IT Function + App Name + SubDomain
+        Dim key As String
+        key = itFunc & "||" & appName & "||" & subD
+
+        If Not dictY_AppSub.Exists(key) Then
+            dictY_AppSub(key) = 0
+            dictN_AppSub(key) = 0
         End If
+
+        If v = "Y" Then
+            dictY_AppSub(key) = CLng(dictY_AppSub(key)) + 1
+        Else
+            dictN_AppSub(key) = CLng(dictN_AppSub(key)) + 1
+        End If
+
 NextR:
     Next r
 
-    wsOut1.Range("A1:F1").Value = Array("App Name", "Policy Sub-Domain", "Total Y", "Total N", "Total Answered", "Compliance %")
+    'Output App-SubDomain Compliance with IT Function first
+    wsOut1.Range("A1:G1").Value = Array("IT Function", "App Name", "Policy Sub-Domain", "Total Y", "Total N", "Total Answered", "Compliance %")
     wsOut1.Rows(1).Font.Bold = True
 
     Dim outRow As Long: outRow = 2
     Dim k As Variant, parts() As String
     For Each k In dictY_AppSub.Keys
         parts = Split(CStr(k), "||")
+
         Dim yCnt As Long, nCnt As Long, total As Long
         yCnt = CLng(dictY_AppSub(k))
         nCnt = CLng(dictN_AppSub(k))
         total = yCnt + nCnt
 
-        wsOut1.Cells(outRow, 1).Value = parts(0)
-        wsOut1.Cells(outRow, 2).Value = parts(1)
-        wsOut1.Cells(outRow, 3).Value = yCnt
-        wsOut1.Cells(outRow, 4).Value = nCnt
-        wsOut1.Cells(outRow, 5).Value = total
-        wsOut1.Cells(outRow, 6).Value = IIf(total > 0, yCnt / total, 0)
+        wsOut1.Cells(outRow, 1).Value = parts(0) 'IT Function
+        wsOut1.Cells(outRow, 2).Value = parts(1) 'App Name
+        wsOut1.Cells(outRow, 3).Value = parts(2) 'Policy Sub-Domain
+        wsOut1.Cells(outRow, 4).Value = yCnt
+        wsOut1.Cells(outRow, 5).Value = nCnt
+        wsOut1.Cells(outRow, 6).Value = total
+        wsOut1.Cells(outRow, 7).Value = IIf(total > 0, yCnt / total, 0)
+
         outRow = outRow + 1
     Next k
-    wsOut1.Columns("A:F").AutoFit
-    wsOut1.Columns("F").NumberFormat = "0.00%"
 
+    wsOut1.Columns("A:G").AutoFit
+    wsOut1.Columns("G").NumberFormat = "0.00%"
+
+    'Optional: sort for readability (IT Function, App, SubDomain)
+    With wsOut1.Sort
+        .SortFields.Clear
+        .SortFields.Add Key:=wsOut1.Range("A2:A" & outRow - 1), Order:=xlAscending
+        .SortFields.Add Key:=wsOut1.Range("B2:B" & outRow - 1), Order:=xlAscending
+        .SortFields.Add Key:=wsOut1.Range("C2:C" & outRow - 1), Order:=xlAscending
+        .SetRange wsOut1.Range("A1:G" & outRow - 1)
+        .Header = xlYes
+        .Apply
+    End With
+
+    'App-only summary (unchanged)
     wsOut2.Range("A1:E1").Value = Array("App Name", "Total Y", "Total N", "Total Answered", "Compliance %")
     wsOut2.Rows(1).Font.Bold = True
 
@@ -535,12 +556,14 @@ NextR:
         wsOut2.Cells(outRow, 3).Value = nA
         wsOut2.Cells(outRow, 4).Value = tA
         wsOut2.Cells(outRow, 5).Value = IIf(tA > 0, yA / tA, 0)
+
         outRow = outRow + 1
     Next k
+
     wsOut2.Columns("A:E").AutoFit
     wsOut2.Columns("E").NumberFormat = "0.00%"
 
-    LogLine logWs, "Build_AppAndSubdomain_Summaries", "OK", "Summaries generated."
+    LogLine logWs, "Build_AppAndSubdomain_Summaries", "OK", "App-SubDomain now includes IT Function."
     Exit Sub
 
 Fail:
