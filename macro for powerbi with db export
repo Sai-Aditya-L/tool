@@ -1,25 +1,5 @@
 Option Explicit
 
-'===========================================================
-' SINGLE-RUN MASTER VBA (ONE MODULE)
-'
-' ONE RUN:
-' 1) Build Consolidated Apps List  -> Sheet: Consolidated
-' 1.1) CLEAN Consolidated: remove rows where App ID is blank
-' 2) Build Combined Metrics        -> Sheet: Combined Metrics
-' 2.5) Clean Combined Metrics
-' 3) Build Simple Compliance       -> Sheet: Simple Compliance
-' 3.5) Clean Simple Compliance BEFORE summaries
-' 4) Build Summaries:
-'    - App-SubDomain Compliance (IT Function FIRST column)
-'    - App Compliance Summary
-'    - IT-Policy Compliance Summary
-' 5) Export ALL required tables to Access:
-'    - Creates tables once (if missing)
-'    - Each run: DELETE rows then INSERT fresh rows (keeps relationships/indexes)
-'    - Pulls additional tables from external workbooks in the selected folder
-'===========================================================
-
 '=========================
 ' CONFIG: UPDATE THIS PATH
 '=========================
@@ -51,11 +31,11 @@ Public Sub Run_All_PowerBI_Builds()
     Application.DisplayAlerts = False
     Application.EnableEvents = False
 
-    '0) Consolidated Apps List
+    '0) Consolidated Apps List (inventory)
     Build_ConsolidatedAppsList_FromFolder folderPath, logWs
 
-    '0.5) Clean Consolidated (remove blank App ID rows)
-    Clean_Consolidated logWs
+    '0.5) CONSOLIDATED FIX: remove rows where App ID is blank
+    Clean_Consolidated_RemoveBlankAppID logWs
 
     '1) Combined Metrics
     Build_CombinedMetrics_FromFolder folderPath, DEBUG_MODE, logWs
@@ -73,12 +53,12 @@ Public Sub Run_All_PowerBI_Builds()
     Build_AppAndSubdomain_Summaries_FromSimpleCompliance logWs
     Build_ITPolicy_Summary_FromSimpleCompliance logWs
 
-    '4) Export everything to Access (create once, refresh data each run)
-    Export_All_To_Access_Upsert ACCESS_DB_PATH, folderPath, logWs
+    '4) Export everything to Access (create once, refresh rows each run)
+    Export_All_To_Access_Refresh ACCESS_DB_PATH, folderPath, logWs
 
     LogLine logWs, "Run_All_PowerBI_Builds", "OK", "Completed successfully."
     MsgBox "All done ✅" & vbCrLf & _
-           "Excel sheets built and Access tables refreshed (no drops).", vbInformation
+           "Sheets built and Access tables refreshed (tables NOT dropped).", vbInformation
 
 CleanExit:
     Application.ScreenUpdating = oldSU
@@ -159,6 +139,7 @@ Private Sub Build_ConsolidatedAppsList_FromFolder(ByVal folderPath As String, By
                       ))
             startCol = labelCol + 1
             endCol = ws.Cells(rowAppName, ws.Columns.Count).End(xlToLeft).Column
+
             If endCol < startCol Then
                 LogLine logWs, fileName, "Skipped", "Consolidated: No app columns found."
                 GoTo CloseAndNext
@@ -166,6 +147,7 @@ Private Sub Build_ConsolidatedAppsList_FromFolder(ByVal folderPath As String, By
 
             For c = startCol To endCol
                 Dim appName As String, itFunc As String, appId As String, dataClass As String, daiId As String
+
                 appName = Trim$(ws.Cells(rowAppName, c).Text)
                 If Len(appName) = 0 Then GoTo NextCol
 
@@ -189,8 +171,7 @@ CloseAndNext:
             On Error Resume Next
             wb.Close SaveChanges:=False
             On Error GoTo 0
-            Set wb = Nothing
-            Set ws = Nothing
+            Set wb = Nothing: Set ws = Nothing
         End If
 
         fileName = Dir()
@@ -212,11 +193,10 @@ Fail:
 End Sub
 
 '===========================================================
-' CLEAN: CONSOLIDATED
-' - Remove any rows where App ID (col A) is blank/empty
-'   (this fixes the "duplicate row where first cell blank" pattern)
+' CONSOLIDATED FIX:
+' Remove rows where App ID (Column A) is blank/empty
 '===========================================================
-Private Sub Clean_Consolidated(ByVal logWs As Worksheet)
+Private Sub Clean_Consolidated_RemoveBlankAppID(ByVal logWs As Worksheet)
     On Error GoTo Fail
 
     Dim ws As Worksheet
@@ -224,10 +204,7 @@ Private Sub Clean_Consolidated(ByVal logWs As Worksheet)
 
     Dim lastRow As Long
     lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
-    If lastRow < 2 Then
-        LogLine logWs, "Clean_Consolidated", "Skipped", "No rows."
-        Exit Sub
-    End If
+    If lastRow < 2 Then Exit Sub
 
     Dim r As Long, removed As Long
     removed = 0
@@ -248,6 +225,7 @@ End Sub
 
 '===========================================================
 ' PART 1: COMBINED METRICS
+' (Your existing logic kept as-is)
 '===========================================================
 Private Sub Build_CombinedMetrics_FromFolder(ByVal folderPath As String, ByVal DEBUG_MODE As Boolean, ByVal logWs As Worksheet)
     Dim metricHeaders As Variant
@@ -385,8 +363,7 @@ CloseAndNext:
             On Error Resume Next
             wb.Close SaveChanges:=False
             On Error GoTo 0
-            Set wb = Nothing
-            Set ws = Nothing
+            Set wb = Nothing: Set ws = Nothing
         End If
 
         fileName = Dir()
@@ -474,7 +451,6 @@ Private Sub Clean_Combined_Metrics(ByVal logWs As Worksheet)
         If b = "application name" Or b = "application/site name" Or b = "application/site" Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
         If c = "data class" Or c = "dataclass" Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
         If Len(b) = 0 Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
-
 NextR:
     Next r
 
@@ -577,8 +553,7 @@ CloseAndNext:
             On Error Resume Next
             wb.Close SaveChanges:=False
             On Error GoTo 0
-            Set wb = Nothing
-            Set ws = Nothing
+            Set wb = Nothing: Set ws = Nothing
         End If
 
         fileName = Dir()
@@ -630,7 +605,6 @@ Private Sub Clean_Simple_Compliance(ByVal logWs As Worksheet)
         If InStr(1, LCase$(qid), "row", vbTextCompare) > 0 Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
         If Len(Trim$(dc)) = 0 Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
         If Len(Trim$(psd)) = 0 Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
-
 NextR:
     Next r
 
@@ -835,11 +809,12 @@ Fail:
 End Sub
 
 '===========================================================
-' PART 4: EXPORT TO ACCESS (CREATE ONCE, REFRESH DATA EACH RUN)
+' PART 4: EXPORT TO ACCESS (CREATE ONCE, REFRESH ROWS)
+' - Works on a brand-new empty .accdb
+' - Does NOT drop tables
 '===========================================================
-Private Sub Export_All_To_Access_Upsert(ByVal accdbPath As String, ByVal folderPath As String, ByVal logWs As Worksheet)
+Private Sub Export_All_To_Access_Refresh(ByVal accdbPath As String, ByVal folderPath As String, ByVal logWs As Worksheet)
     On Error GoTo Fail
-    If Right$(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
 
     Dim cnn As Object
     Set cnn = CreateObject("ADODB.Connection")
@@ -851,50 +826,50 @@ Private Sub Export_All_To_Access_Upsert(ByVal accdbPath As String, ByVal folderP
     cnn.Open connStr
 
     'A) This workbook outputs
-    Upsert_OneWorksheet_ToAccess ThisWorkbook.Worksheets("Consolidated"), "t_Consolidated", cnn, True  'skip blank AppID rows
-    Upsert_OneWorksheet_ToAccess ThisWorkbook.Worksheets("Combined Metrics"), "t_CombinedMetrics", cnn, False
-    Upsert_OneWorksheet_ToAccess ThisWorkbook.Worksheets("Simple Compliance"), "t_SimpleCompliance", cnn, False
-    Upsert_OneWorksheet_ToAccess ThisWorkbook.Worksheets("App Compliance Summary"), "t_AppComplianceSummary", cnn, False
-    Upsert_OneWorksheet_ToAccess ThisWorkbook.Worksheets("App-SubDomain Compliance"), "t_AppSubDomainCompliance", cnn, False
-    Upsert_OneWorksheet_ToAccess ThisWorkbook.Worksheets("IT-Policy Compliance Summary"), "t_ITPolicyComplianceSummary", cnn, False
+    Access_RefreshTableFromSheet cnn, ThisWorkbook.Worksheets("Consolidated"), "t_Consolidated", True   'skip blank col A rows
+    Access_RefreshTableFromSheet cnn, ThisWorkbook.Worksheets("Combined Metrics"), "t_CombinedMetrics", False
+    Access_RefreshTableFromSheet cnn, ThisWorkbook.Worksheets("Simple Compliance"), "t_SimpleCompliance", False
+    Access_RefreshTableFromSheet cnn, ThisWorkbook.Worksheets("App Compliance Summary"), "t_AppComplianceSummary", False
+    Access_RefreshTableFromSheet cnn, ThisWorkbook.Worksheets("App-SubDomain Compliance"), "t_AppSubDomainCompliance", False
+    Access_RefreshTableFromSheet cnn, ThisWorkbook.Worksheets("IT-Policy Compliance Summary"), "t_ITPolicyComplianceSummary", False
 
     LogLine logWs, "Export", "OK", "Local tables refreshed."
 
-    'B) External workbooks in selected folder
+    'B) External workbooks in selected folder (your mapping)
     Dim p1 As String, p2 As String, p3 As String, p4 As String
 
     p1 = FindWorkbookByNameInFolder(folderPath, "All Template Questions One Tab v2.0")
     If Len(p1) > 0 Then
-        Upsert_FromExternalWorkbook p1, "outputTemplate -Power BI Upload", "t_ControlGroupQuestions", cnn, logWs
+        Access_RefreshTableFromExternalWorkbook cnn, p1, "outputTemplate -Power BI Upload", "t_ControlGroupQuestions", logWs
     Else
         LogLine logWs, "Export", "Skipped", "Missing file: All Template Questions One Tab v2.0"
     End If
 
     p2 = FindWorkbookByNameInFolder(folderPath, "Question ID and Risk Rating Mapping")
     If Len(p2) > 0 Then
-        Upsert_FromExternalWorkbook p2, "outputTemplate -Power BI Upload", "t_Categories1", cnn, logWs
+        Access_RefreshTableFromExternalWorkbook cnn, p2, "outputTemplate -Power BI Upload", "t_Categories1", logWs
     Else
         LogLine logWs, "Export", "Skipped", "Missing file: Question ID and Risk Rating Mapping"
     End If
 
     p3 = FindWorkbookByNameInFolder(folderPath, "Riskid")
     If Len(p3) > 0 Then
-        Upsert_FromExternalWorkbook p3, "Riskid", "t_Riskid", cnn, logWs
+        Access_RefreshTableFromExternalWorkbook cnn, p3, "Riskid", "t_Riskid", logWs
     Else
         LogLine logWs, "Export", "Skipped", "Missing file: Riskid"
     End If
 
     p4 = FindWorkbookByNameInFolder(folderPath, "Macros")
     If Len(p4) > 0 Then
-        Upsert_FromExternalWorkbook p4, "Russia", "t_Russia", cnn, logWs
-        Upsert_FromExternalWorkbook p4, "BSS", "t_BSS", cnn, logWs
-        Upsert_FromExternalWorkbook p4, "AN", "t_AN", cnn, logWs
-        Upsert_FromExternalWorkbook p4, "CDS", "t_CDS", cnn, logWs
-        Upsert_FromExternalWorkbook p4, "China", "t_China", cnn, logWs
-        Upsert_FromExternalWorkbook p4, "Core_dx", "t_Core_dx", cnn, logWs
-        Upsert_FromExternalWorkbook p4, "DTS", "t_DTS", cnn, logWs
-        Upsert_FromExternalWorkbook p4, "EPD", "t_EPD", cnn, logWs
-        Upsert_FromExternalWorkbook p4, "RMDx", "t_RMDx", cnn, logWs
+        Access_RefreshTableFromExternalWorkbook cnn, p4, "Russia", "t_Russia", logWs
+        Access_RefreshTableFromExternalWorkbook cnn, p4, "BSS", "t_BSS", logWs
+        Access_RefreshTableFromExternalWorkbook cnn, p4, "AN", "t_AN", logWs
+        Access_RefreshTableFromExternalWorkbook cnn, p4, "CDS", "t_CDS", logWs
+        Access_RefreshTableFromExternalWorkbook cnn, p4, "China", "t_China", logWs
+        Access_RefreshTableFromExternalWorkbook cnn, p4, "Core_dx", "t_Core_dx", logWs
+        Access_RefreshTableFromExternalWorkbook cnn, p4, "DTS", "t_DTS", logWs
+        Access_RefreshTableFromExternalWorkbook cnn, p4, "EPD", "t_EPD", logWs
+        Access_RefreshTableFromExternalWorkbook cnn, p4, "RMDx", "t_RMDx", logWs
     Else
         LogLine logWs, "Export", "Skipped", "Missing file: Macros"
     End If
@@ -902,17 +877,17 @@ Private Sub Export_All_To_Access_Upsert(ByVal accdbPath As String, ByVal folderP
     cnn.Close
     Set cnn = Nothing
 
-    LogLine logWs, "Export_All_To_Access_Upsert", "OK", "Access refresh completed: " & accdbPath
+    LogLine logWs, "Export_All_To_Access_Refresh", "OK", "Access refresh completed: " & accdbPath
     Exit Sub
 
 Fail:
-    LogLine logWs, "Export_All_To_Access_Upsert", "Error", Err.Number & " - " & Err.Description
+    LogLine logWs, "Export_All_To_Access_Refresh", "Error", Err.Number & " - " & Err.Description
     On Error Resume Next
     If Not cnn Is Nothing Then cnn.Close
 End Sub
 
-Private Sub Upsert_FromExternalWorkbook(ByVal fullPath As String, ByVal sheetName As String, ByVal tableName As String, _
-                                       ByVal cnn As Object, ByVal logWs As Worksheet)
+Private Sub Access_RefreshTableFromExternalWorkbook(ByVal cnn As Object, ByVal fullPath As String, ByVal sheetName As String, _
+                                                   ByVal tableName As String, ByVal logWs As Worksheet)
     Dim wb As Workbook, ws As Worksheet
     On Error GoTo Fail
 
@@ -924,7 +899,7 @@ Private Sub Upsert_FromExternalWorkbook(ByVal fullPath As String, ByVal sheetNam
         GoTo CleanExit
     End If
 
-    Upsert_OneWorksheet_ToAccess ws, tableName, cnn, False
+    Access_RefreshTableFromSheet cnn, ws, tableName, False
     LogLine logWs, wb.Name, "OK", "Refreshed " & sheetName & " -> " & tableName
 
 CleanExit:
@@ -934,77 +909,81 @@ CleanExit:
     Exit Sub
 
 Fail:
-    LogLine logWs, fullPath, "Error", "External upsert failed (" & sheetName & "): " & Err.Number & " - " & Err.Description
+    LogLine logWs, fullPath, "Error", "External refresh failed (" & sheetName & "): " & Err.Number & " - " & Err.Description
     On Error Resume Next
     If Not wb Is Nothing Then wb.Close SaveChanges:=False
 End Sub
 
 '===========================================================
-' UPSERT exporter: create table once, then refresh data each run
-' - If table missing: create it using Excel headers (TEXT fields)
-' - If table exists: add missing columns, DELETE rows, INSERT fresh rows
-' - Optional: skipBlankFirstColRows = True to ignore rows where col A is blank
+' ACCESS CORE EXPORTER (self-contained, no missing subs)
 '===========================================================
-Private Sub Upsert_OneWorksheet_ToAccess(ByVal ws As Worksheet, ByVal tableName As String, ByVal cnn As Object, _
+Private Sub Access_RefreshTableFromSheet(ByVal cnn As Object, ByVal ws As Worksheet, ByVal tableName As String, _
                                         ByVal skipBlankFirstColRows As Boolean)
-    Dim lastCol As Long, lastRow As Long
+    Dim lastRow As Long, lastCol As Long
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
     lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
     If lastCol < 1 Then Exit Sub
 
-    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
-    If lastRow < 1 Then Exit Sub
-
     Dim headers() As String
-    headers = GetUniqueCleanHeaders(ws, lastCol)
+    headers = GetUniqueCleanHeaders(ws, lastCol) '1..lastCol
 
-    Dim nCols As Long
-    nCols = UBound(headers)
-
-    If Not AccessTableExists(cnn, tableName) Then
-        CreateTableWithHeaders cnn, tableName, headers
+    If Not Access_TableExists(cnn, tableName) Then
+        Access_CreateTable cnn, tableName, headers, lastCol
     Else
-        EnsureAccessColumnsExist cnn, tableName, headers
+        Access_EnsureColumns cnn, tableName, headers, lastCol
     End If
 
+    'Refresh rows (keep table/relationships)
     cnn.Execute "DELETE FROM [" & tableName & "];"
 
     If lastRow >= 2 Then
-        InsertAllRowsUsingHeaders cnn, ws, tableName, headers, lastRow, nCols, skipBlankFirstColRows
+        Access_InsertAllRows cnn, ws, tableName, headers, lastRow, lastCol, skipBlankFirstColRows
     End If
 End Sub
 
-Private Function AccessTableExists(ByVal cnn As Object, ByVal tableName As String) As Boolean
+Private Function Access_TableExists(ByVal cnn As Object, ByVal tableName As String) As Boolean
     On Error GoTo Nope
-    Dim rs As Object
-    Set rs = CreateObject("ADODB.Recordset")
-    rs.Open "SELECT Name FROM MSysObjects WHERE Type In (1,4,6) AND Name='" & Replace(tableName, "'", "''") & "';", cnn, 0, 1
-    AccessTableExists = (Not rs.EOF)
-    rs.Close
-    Set rs = Nothing
+
+    'ADOX Catalog is reliable for brand-new DBs
+    Dim cat As Object, t As Object
+    Set cat = CreateObject("ADOX.Catalog")
+    cat.ActiveConnection = cnn
+
+    For Each t In cat.Tables
+        If LCase$(t.Name) = LCase$(tableName) Then
+            Access_TableExists = True
+            Exit Function
+        End If
+    Next t
+
+    Access_TableExists = False
     Exit Function
 
 Nope:
+    'Fallback: try open
     On Error Resume Next
-    Dim rs2 As Object
-    Set rs2 = CreateObject("ADODB.Recordset")
-    rs2.Open "SELECT * FROM [" & tableName & "] WHERE 1=0;", cnn, 0, 1
-    AccessTableExists = (Err.Number = 0)
-    Err.Clear
-    On Error GoTo 0
-    If Not rs2 Is Nothing Then
-        On Error Resume Next
-        rs2.Close
-        Set rs2 = Nothing
-        On Error GoTo 0
-    End If
-End Function
-
-Private Sub EnsureAccessColumnsExist(ByVal cnn As Object, ByVal tableName As String, ByVal headers() As String)
-    Dim existing As Object
-    Set existing = CreateObject("Scripting.Dictionary")
-
     Dim rs As Object
     Set rs = CreateObject("ADODB.Recordset")
+    rs.Open "SELECT * FROM [" & tableName & "] WHERE 1=0;", cnn, 0, 1
+    Access_TableExists = (Err.Number = 0)
+    Err.Clear
+    If Not rs Is Nothing Then rs.Close
+End Function
+
+Private Sub Access_CreateTable(ByVal cnn As Object, ByVal tableName As String, ByVal headers() As String, ByVal nCols As Long)
+    Dim sql As String, i As Long
+    sql = "CREATE TABLE [" & tableName & "] ("
+    For i = 1 To nCols
+        sql = sql & "[" & headers(i) & "] TEXT(255),"
+    Next i
+    sql = Left$(sql, Len(sql) - 1) & ");"
+    cnn.Execute sql
+End Sub
+
+Private Sub Access_EnsureColumns(ByVal cnn As Object, ByVal tableName As String, ByVal headers() As String, ByVal nCols As Long)
+    Dim existing As Object: Set existing = CreateObject("Scripting.Dictionary")
+
+    Dim rs As Object: Set rs = CreateObject("ADODB.Recordset")
     rs.Open "SELECT * FROM [" & tableName & "] WHERE 1=0;", cnn, 0, 1
 
     Dim i As Long
@@ -1012,36 +991,20 @@ Private Sub EnsureAccessColumnsExist(ByVal cnn As Object, ByVal tableName As Str
         existing(LCase$(rs.Fields(i).Name)) = True
     Next i
     rs.Close
-    Set rs = Nothing
 
-    Dim c As Long
-    For c = LBound(headers) To UBound(headers)
-        Dim colName As String
-        colName = headers(c)
-        If Not existing.Exists(LCase$(colName)) Then
-            cnn.Execute "ALTER TABLE [" & tableName & "] ADD COLUMN [" & colName & "] TEXT(255);"
+    For i = 1 To nCols
+        If Not existing.Exists(LCase$(headers(i))) Then
+            cnn.Execute "ALTER TABLE [" & tableName & "] ADD COLUMN [" & headers(i) & "] TEXT(255);"
         End If
-    Next c
+    Next i
 End Sub
 
-Private Sub CreateTableWithHeaders(ByVal cnn As Object, ByVal tableName As String, ByVal headers() As String)
-    Dim sql As String, c As Long
-    sql = "CREATE TABLE [" & tableName & "] ("
-    For c = LBound(headers) To UBound(headers)
-        sql = sql & "[" & headers(c) & "] TEXT(255),"
-    Next c
-    sql = Left$(sql, Len(sql) - 1) & ");"
-    cnn.Execute sql
-End Sub
-
-Private Sub InsertAllRowsUsingHeaders(ByVal cnn As Object, ByVal ws As Worksheet, ByVal tableName As String, _
-                                     ByVal headers() As String, ByVal lastRow As Long, ByVal nCols As Long, _
-                                     ByVal skipBlankFirstColRows As Boolean)
-    Dim colList As String
+Private Sub Access_InsertAllRows(ByVal cnn As Object, ByVal ws As Worksheet, ByVal tableName As String, _
+                                ByVal headers() As String, ByVal lastRow As Long, ByVal lastCol As Long, _
+                                ByVal skipBlankFirstColRows As Boolean)
+    Dim colList As String, c As Long
     colList = ""
-
-    Dim c As Long
-    For c = 1 To nCols
+    For c = 1 To lastCol
         colList = colList & "[" & headers(c) & "],"
     Next c
     colList = Left$(colList, Len(colList) - 1)
@@ -1054,7 +1017,7 @@ Private Sub InsertAllRowsUsingHeaders(ByVal cnn As Object, ByVal ws As Worksheet
 
         Dim valList As String
         valList = ""
-        For c = 1 To nCols
+        For c = 1 To lastCol
             Dim v As String
             v = CStr(ws.Cells(r, c).Value)
             v = Replace(v, "'", "''")
@@ -1219,7 +1182,7 @@ Private Function PickFolderSafe() As String
     On Error GoTo Fallback
     Dim fd As FileDialog
     Set fd = Application.FileDialog(msoFileDialogFolderPicker)
-    fd.Title = "Select folder containing the assessment Excel files (and the external mapping workbooks)"
+    fd.Title = "Select folder containing assessment files AND external mapping workbooks"
     If fd.Show = -1 Then
         PickFolderSafe = fd.SelectedItems(1)
     Else
