@@ -1,33 +1,27 @@
 Option Explicit
 
 '===========================================================
-' SINGLE-RUN MASTER VBA (ONE MODULE) - COMPILE-SAFE
+' SINGLE-RUN MASTER VBA (ONE MODULE) - FIXED
 '
-' What this does, in ONE RUN:
-' 1) Build Consolidated Apps List (inventory)  -> Sheet: Consolidated
-' 1.1) FIX Consolidated: remove rows where App ID (col A) is blank
-' 2) Build Combined Metrics                    -> Sheet: Combined Metrics
-' 2.1) Clean Combined Metrics (remove junk rows)
-' 3) Build Simple Compliance                   -> Sheet: Simple Compliance
-' 3.1) Clean Simple Compliance (remove junk rows BEFORE summaries)
-' 4) Build Summaries from Simple Compliance:
-'    - App-SubDomain Compliance (IT Function FIRST column)
-'    - App Compliance Summary
-'    - IT-Policy Compliance Summary
-' 5) Export ALL required tables to Access (NO DROPS):
-'    - Creates tables once (if missing)
+' Fixes included:
+' 1) CONSOLIDATED FIX:
+'    - Removes rows where App ID (Col A) is blank/empty
+'    - Also avoids writing blank App IDs during build
+'
+' 2) ACCESS EXPORT FIX (NO COMPILE ERRORS):
+'    - All Access helper subs/functions are INCLUDED and names match
+'    - Creates tables if missing (TEXT(255))
+'    - Ensures missing columns exist (ALTER TABLE ADD COLUMN)
 '    - Each run: DELETE rows then INSERT fresh rows (keeps relationships/indexes)
-'    - Pulls additional tables from external workbooks in the selected folder
+'    - Uses ADODB.Command parameters (avoids quote/escape issues)
 '
-' NOTE:
-' - Uses late-binding for ADO/ADOX (no reference required).
-' - If your machine doesn't have the ACE provider, install "Microsoft Access Database Engine".
+' 3) External workbook imports (same mapping you provided)
 '===========================================================
 
 '=========================
 ' CONFIG: UPDATE THIS PATH
 '=========================
-Private Const ACCESS_DB_PATH As String = "C:\Path\YourDatabase.accdb" '<< CHANGE THIS
+Private Const ACCESS_DB_PATH As String = "C:\Path\YourDatabase.accdb"
 
 '===========================================================
 ' MAIN: ONE-CLICK RUN
@@ -58,7 +52,7 @@ Public Sub Run_All_PowerBI_Builds()
     '0) Consolidated Apps List (inventory)
     Build_ConsolidatedAppsList_FromFolder folderPath, logWs
 
-    '0.5) CONSOLIDATED FIX: remove rows where App ID is blank/empty
+    '0.5) CONSOLIDATED FIX: remove rows where App ID is blank (col A)
     Clean_Consolidated_RemoveBlankAppID logWs
 
     '1) Combined Metrics
@@ -78,7 +72,7 @@ Public Sub Run_All_PowerBI_Builds()
     Build_ITPolicy_Summary_FromSimpleCompliance logWs
 
     '4) Export everything to Access (create once, refresh data each run)
-    Export_All_To_Access_NoDrops ACCESS_DB_PATH, folderPath, logWs
+    Export_All_To_Access_Upsert ACCESS_DB_PATH, folderPath, logWs
 
     LogLine logWs, "Run_All_PowerBI_Builds", "OK", "Completed successfully."
     MsgBox "All done ✅" & vbCrLf & _
@@ -122,7 +116,6 @@ Private Sub Build_ConsolidatedAppsList_FromFolder(ByVal folderPath As String, By
     Do While Len(fileName) > 0
         fullPath = folderPath & fileName
 
-        'Do not open the macro workbook itself if it's in the folder
         If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
             On Error GoTo FileError
             Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=True, UpdateLinks:=False)
@@ -171,11 +164,16 @@ Private Sub Build_ConsolidatedAppsList_FromFolder(ByVal folderPath As String, By
 
             For c = startCol To endCol
                 Dim appName As String, itFunc As String, appId As String, dataClass As String, daiId As String
+
                 appName = Trim$(ws.Cells(rowAppName, c).Text)
                 If Len(appName) = 0 Then GoTo NextCol
 
-                itFunc = IIf(rowITFunc = 0, "", Trim$(ws.Cells(rowITFunc, c).Text))
                 appId = Trim$(ws.Cells(rowAppId, c).Text)
+
+                'IMPORTANT: avoid writing blank App IDs
+                If Len(Trim$(appId)) = 0 Then GoTo NextCol
+
+                itFunc = IIf(rowITFunc = 0, "", Trim$(ws.Cells(rowITFunc, c).Text))
                 dataClass = IIf(rowDataClass = 0, "", Trim$(ws.Cells(rowDataClass, c).Text))
                 daiId = IIf(rowDaiId = 0, "", Trim$(ws.Cells(rowDaiId, c).Text))
 
@@ -218,9 +216,7 @@ Fail:
 End Sub
 
 '===========================================================
-' CONSOLIDATED FIX:
-' Remove rows where App ID (Col A) is blank/empty
-' (this matches your screenshot where every other row had blank App ID)
+' CONSOLIDATED FIX: remove rows where App ID (col A) is blank
 '===========================================================
 Private Sub Clean_Consolidated_RemoveBlankAppID(ByVal logWs As Worksheet)
     On Error GoTo Fail
@@ -231,7 +227,7 @@ Private Sub Clean_Consolidated_RemoveBlankAppID(ByVal logWs As Worksheet)
     Dim lastRow As Long
     lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
     If lastRow < 2 Then
-        LogLine logWs, "Clean_Consolidated", "Skipped", "No rows."
+        LogLine logWs, "Clean_Consolidated_RemoveBlankAppID", "Skipped", "No rows."
         Exit Sub
     End If
 
@@ -245,11 +241,11 @@ Private Sub Clean_Consolidated_RemoveBlankAppID(ByVal logWs As Worksheet)
         End If
     Next r
 
-    LogLine logWs, "Clean_Consolidated", "OK", "Removed blank App ID rows: " & removed
+    LogLine logWs, "Clean_Consolidated_RemoveBlankAppID", "OK", "Removed rows: " & removed
     Exit Sub
 
 Fail:
-    LogLine logWs, "Clean_Consolidated", "Error", Err.Number & " - " & Err.Description
+    LogLine logWs, "Clean_Consolidated_RemoveBlankAppID", "Error", Err.Number & " - " & Err.Description
 End Sub
 
 '===========================================================
@@ -306,9 +302,9 @@ Private Sub Build_CombinedMetrics_FromFolder(ByVal folderPath As String, ByVal D
     fileName = Dir(folderPath & "*.xls*")
     Do While Len(fileName) > 0
         fullPath = folderPath & fileName
-
         If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
             On Error GoTo FileError
+
             Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=True, UpdateLinks:=False)
 
             Set ws = GetTemplateSheet(wb)
@@ -318,14 +314,14 @@ Private Sub Build_CombinedMetrics_FromFolder(ByVal folderPath As String, ByVal D
             End If
 
             Dim polSubCol As Long, qidCol As Long, lastRow As Long
-            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 60)
+            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 40)
             If polSubCol = 0 Then
                 LogLine logWs, fileName, "Skipped", "Combined: Could not find 'Policy Sub-Domain' in row 3."
                 GoTo CloseAndNext
             End If
 
-            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 60)
-            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 60)
+            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 40)
+            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 40)
 
             lastRow = ws.Cells(ws.Rows.Count, polSubCol).End(xlUp).Row
             If lastRow < 7 Then
@@ -354,7 +350,7 @@ Private Sub Build_CombinedMetrics_FromFolder(ByVal folderPath As String, ByVal D
                 dataClass = Trim$(ws.Cells(5, respCol).Text)
                 appId = Trim$(ws.Cells(4, respCol).Text)
                 daiId = Trim$(ws.Cells(6, respCol).Text)
-                numAsset = GetValueForLabel(ws, "Number of Asset", respCol, 1, 200, 8)
+                numAsset = GetValueForLabel(ws, "Number of Asset", respCol, 1, 120, 8)
 
                 outRow = outRow + 1
                 outWs.Cells(outRow, 1).Value = itFunc
@@ -453,7 +449,6 @@ End Function
 
 '===========================================================
 ' CLEAN: COMBINED METRICS
-' removes extra header/separator rows like row 2/16/23 etc.
 '===========================================================
 Private Sub Clean_Combined_Metrics(ByVal logWs As Worksheet)
     On Error GoTo Fail
@@ -512,9 +507,9 @@ Private Sub Build_SimpleCompliance_FromFolder(ByVal folderPath As String, ByVal 
     fileName = Dir(folderPath & "*.xls*")
     Do While Len(fileName) > 0
         fullPath = folderPath & fileName
-
         If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
             On Error GoTo FileError
+
             Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=True, UpdateLinks:=False)
 
             Set ws = GetTemplateSheet(wb)
@@ -524,9 +519,9 @@ Private Sub Build_SimpleCompliance_FromFolder(ByVal folderPath As String, ByVal 
             End If
 
             Dim qidCol As Long, polSubCol As Long, lastRow As Long
-            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 60)
-            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 60)
-            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 60)
+            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 40)
+            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 40)
+            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 40)
 
             If qidCol = 0 Then
                 LogLine logWs, fileName, "Skipped", "Simple: Could not find 'Question ID' in row 3."
@@ -845,19 +840,20 @@ End Sub
 '===========================================================
 ' PART 4: EXPORT TO ACCESS (CREATE ONCE, REFRESH DATA EACH RUN)
 '
-' External workbook layout (your mapping):
-' - Control Group/Questions -> File: All Template Questions One Tab v2.0*  Sheet: outputTemplate -Power BI Upload
-' - Categories1             -> File: Question ID and Risk Rating Mapping*    Sheet: outputTemplate -Power BI Upload
-' - Riskid                  -> File: Riskid*                                Sheet: Riskid
-' - Russia,BSS,AN,CDS,China,Core_dx,DTS,EPD,RMDx -> File: Macros* sheets same names
+' Mapping (your list):
+' - Control Group/Questions -> All Template Questions One Tab v2.0* / outputTemplate -Power BI Upload
+' - Categories1            -> Question ID and Risk Rating Mapping* / outputTemplate -Power BI Upload
+' - Riskid                 -> Riskid* / Riskid
+' - Russia,BSS,AN,CDS,China,Core_dx,DTS,EPD,RMDx -> Macros* sheets same names
 '===========================================================
-Private Sub Export_All_To_Access_NoDrops(ByVal accdbPath As String, ByVal folderPath As String, ByVal logWs As Worksheet)
+Private Sub Export_All_To_Access_Upsert(ByVal accdbPath As String, ByVal folderPath As String, ByVal logWs As Worksheet)
     On Error GoTo Fail
 
     If Right$(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
 
-    If Len(Trim$(accdbPath)) = 0 Then Err.Raise vbObjectError + 1, , "ACCESS_DB_PATH is blank."
-    If Dir(accdbPath) = "" Then Err.Raise vbObjectError + 2, , "Access DB not found at: " & accdbPath
+    If Len(Dir(accdbPath)) = 0 Then
+        Err.Raise vbObjectError + 101, "Export_All_To_Access_Upsert", "Access DB not found: " & accdbPath
+    End If
 
     Dim cnn As Object
     Set cnn = CreateObject("ADODB.Connection")
@@ -867,11 +863,6 @@ Private Sub Export_All_To_Access_NoDrops(ByVal accdbPath As String, ByVal folder
               "Data Source=" & accdbPath & ";" & _
               "Persist Security Info=False;"
     cnn.Open connStr
-
-    'Use a transaction for speed + safety
-    On Error Resume Next
-    cnn.BeginTrans
-    On Error GoTo Fail
 
     'A) This workbook outputs
     Access_RefreshTableFromSheet cnn, ThisWorkbook.Worksheets("Consolidated"), "t_Consolidated", True
@@ -888,59 +879,54 @@ Private Sub Export_All_To_Access_NoDrops(ByVal accdbPath As String, ByVal folder
 
     p1 = FindWorkbookByNameInFolder(folderPath, "All Template Questions One Tab v2.0")
     If Len(p1) > 0 Then
-        Upsert_FromExternalWorkbook_NoDrops cnn, p1, "outputTemplate -Power BI Upload", "t_ControlGroupQuestions", logWs
+        Upsert_FromExternalWorkbook p1, "outputTemplate -Power BI Upload", "t_ControlGroupQuestions", cnn, logWs
     Else
         LogLine logWs, "Export", "Skipped", "Missing file: All Template Questions One Tab v2.0"
     End If
 
     p2 = FindWorkbookByNameInFolder(folderPath, "Question ID and Risk Rating Mapping")
     If Len(p2) > 0 Then
-        Upsert_FromExternalWorkbook_NoDrops cnn, p2, "outputTemplate -Power BI Upload", "t_Categories1", logWs
+        Upsert_FromExternalWorkbook p2, "outputTemplate -Power BI Upload", "t_Categories1", cnn, logWs
     Else
         LogLine logWs, "Export", "Skipped", "Missing file: Question ID and Risk Rating Mapping"
     End If
 
     p3 = FindWorkbookByNameInFolder(folderPath, "Riskid")
     If Len(p3) > 0 Then
-        Upsert_FromExternalWorkbook_NoDrops cnn, p3, "Riskid", "t_Riskid", logWs
+        Upsert_FromExternalWorkbook p3, "Riskid", "t_Riskid", cnn, logWs
     Else
         LogLine logWs, "Export", "Skipped", "Missing file: Riskid"
     End If
 
     p4 = FindWorkbookByNameInFolder(folderPath, "Macros")
     If Len(p4) > 0 Then
-        Upsert_FromExternalWorkbook_NoDrops cnn, p4, "Russia", "t_Russia", logWs
-        Upsert_FromExternalWorkbook_NoDrops cnn, p4, "BSS", "t_BSS", logWs
-        Upsert_FromExternalWorkbook_NoDrops cnn, p4, "AN", "t_AN", logWs
-        Upsert_FromExternalWorkbook_NoDrops cnn, p4, "CDS", "t_CDS", logWs
-        Upsert_FromExternalWorkbook_NoDrops cnn, p4, "China", "t_China", logWs
-        Upsert_FromExternalWorkbook_NoDrops cnn, p4, "Core_dx", "t_Core_dx", logWs
-        Upsert_FromExternalWorkbook_NoDrops cnn, p4, "DTS", "t_DTS", logWs
-        Upsert_FromExternalWorkbook_NoDrops cnn, p4, "EPD", "t_EPD", logWs
-        Upsert_FromExternalWorkbook_NoDrops cnn, p4, "RMDx", "t_RMDx", logWs
+        Upsert_FromExternalWorkbook p4, "Russia", "t_Russia", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "BSS", "t_BSS", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "AN", "t_AN", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "CDS", "t_CDS", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "China", "t_China", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "Core_dx", "t_Core_dx", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "DTS", "t_DTS", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "EPD", "t_EPD", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "RMDx", "t_RMDx", cnn, logWs
     Else
         LogLine logWs, "Export", "Skipped", "Missing file: Macros"
     End If
 
-    cnn.CommitTrans
     cnn.Close
     Set cnn = Nothing
 
-    LogLine logWs, "Export_All_To_Access_NoDrops", "OK", "Access refresh completed: " & accdbPath
+    LogLine logWs, "Export_All_To_Access_Upsert", "OK", "Access refresh completed: " & accdbPath
     Exit Sub
 
 Fail:
+    LogLine logWs, "Export_All_To_Access_Upsert", "Error", Err.Number & " - " & Err.Description
     On Error Resume Next
-    If Not cnn Is Nothing Then
-        cnn.RollbackTrans
-        cnn.Close
-    End If
-    On Error GoTo 0
-    LogLine logWs, "Export_All_To_Access_NoDrops", "Error", Err.Number & " - " & Err.Description
-    Err.Raise Err.Number, Err.Source, Err.Description
+    If Not cnn Is Nothing Then cnn.Close
 End Sub
 
-Private Sub Upsert_FromExternalWorkbook_NoDrops(ByVal cnn As Object, ByVal fullPath As String, ByVal sheetName As String, ByVal tableName As String, ByVal logWs As Worksheet)
+Private Sub Upsert_FromExternalWorkbook(ByVal fullPath As String, ByVal sheetName As String, ByVal tableName As String, _
+                                       ByVal cnn As Object, ByVal logWs As Worksheet)
     Dim wb As Workbook, ws As Worksheet
     On Error GoTo Fail
 
@@ -962,27 +948,21 @@ CleanExit:
     Exit Sub
 
 Fail:
-    LogLine logWs, fullPath, "Error", "External refresh failed (" & sheetName & "): " & Err.Number & " - " & Err.Description
+    LogLine logWs, fullPath, "Error", "External upsert failed (" & sheetName & "): " & Err.Number & " - " & Err.Description
     On Error Resume Next
     If Not wb Is Nothing Then wb.Close SaveChanges:=False
 End Sub
 
 '===========================================================
-' ACCESS REFRESH CORE (NO DROPS) - COMPILE-SAFE
-'
-' - Create table once (TEXT fields) if missing
-' - Ensure columns exist
-' - DELETE rows
-' - INSERT fresh rows
-'
-' skipBlankFirstColRows:
-'   True  -> ignores rows where column A is blank (useful for Consolidated)
-'   False -> inserts all rows
+' ACCESS CORE EXPORTER (NO MISSING SUBS)
+' - Creates table once if missing
+' - Ensures columns exist
+' - DELETE rows then INSERT fresh rows
+' - Optional skipBlankFirstColRows: ignores rows where col A blank
 '===========================================================
 Private Sub Access_RefreshTableFromSheet(ByVal cnn As Object, ByVal ws As Worksheet, ByVal tableName As String, _
                                         Optional ByVal skipBlankFirstColRows As Boolean = False)
-
-    Dim lastRow As Long, lastCol As Long
+    Dim lastCol As Long, lastRow As Long
     lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
     If lastCol < 1 Then Exit Sub
 
@@ -990,7 +970,7 @@ Private Sub Access_RefreshTableFromSheet(ByVal cnn As Object, ByVal ws As Worksh
     If lastRow < 1 Then Exit Sub
 
     Dim headers() As String
-    headers = GetUniqueCleanHeaders(ws, lastCol)  '1..lastCol
+    headers = GetUniqueCleanHeaders(ws, lastCol)
 
     If Not Access_TableExists(cnn, tableName) Then
         Access_CreateTable cnn, tableName, headers
@@ -998,7 +978,7 @@ Private Sub Access_RefreshTableFromSheet(ByVal cnn As Object, ByVal ws As Worksh
         Access_EnsureColumnsExist cnn, tableName, headers
     End If
 
-    'Refresh rows (keep table/relationships/indexes)
+    'Refresh rows (keeps relationships/indexes)
     cnn.Execute "DELETE FROM [" & tableName & "];"
 
     If lastRow >= 2 Then
@@ -1009,7 +989,7 @@ End Sub
 Private Function Access_TableExists(ByVal cnn As Object, ByVal tableName As String) As Boolean
     On Error GoTo Nope
 
-    'ADOX Catalog works well even for brand-new empty DBs
+    'ADOX Catalog is reliable even for brand-new empty DBs
     Dim cat As Object, t As Object
     Set cat = CreateObject("ADOX.Catalog")
     Set cat.ActiveConnection = cnn
@@ -1025,7 +1005,7 @@ Private Function Access_TableExists(ByVal cnn As Object, ByVal tableName As Stri
     Exit Function
 
 Nope:
-    'Fallback: try open
+    'Fallback: try opening table schema
     On Error Resume Next
     Dim rs As Object
     Set rs = CreateObject("ADODB.Recordset")
@@ -1055,10 +1035,11 @@ Private Sub Access_EnsureColumnsExist(ByVal cnn As Object, ByVal tableName As St
     Dim existing As Object
     Set existing = CreateObject("Scripting.Dictionary")
 
-    Dim rs As Object, i As Long
+    Dim rs As Object
     Set rs = CreateObject("ADODB.Recordset")
     rs.Open "SELECT * FROM [" & tableName & "] WHERE 1=0;", cnn, 0, 1
 
+    Dim i As Long
     For i = 0 To rs.Fields.Count - 1
         existing(LCase$(rs.Fields(i).Name)) = True
     Next i
@@ -1077,13 +1058,35 @@ End Sub
 Private Sub Access_InsertAllRows(ByVal cnn As Object, ByVal ws As Worksheet, ByVal tableName As String, _
                                 ByVal headers() As String, ByVal lastRow As Long, ByVal lastCol As Long, _
                                 ByVal skipBlankFirstColRows As Boolean)
+    'Parameterised insert prevents quote issues and reduces failures.
+    Const adCmdText As Long = 1
+    Const adParamInput As Long = 1
+    Const adVarWChar As Long = 202
 
-    Dim colList As String, c As Long
+    Dim colList As String, qList As String
+    Dim c As Long
     colList = ""
+    qList = ""
     For c = 1 To lastCol
         colList = colList & "[" & headers(c) & "],"
+        qList = qList & "?,"
     Next c
     colList = Left$(colList, Len(colList) - 1)
+    qList = Left$(qList, Len(qList) - 1)
+
+    Dim sql As String
+    sql = "INSERT INTO [" & tableName & "] (" & colList & ") VALUES (" & qList & ");"
+
+    Dim cmd As Object
+    Set cmd = CreateObject("ADODB.Command")
+    cmd.ActiveConnection = cnn
+    cmd.CommandType = adCmdText
+    cmd.CommandText = sql
+
+    'Create parameters once
+    For c = 1 To lastCol
+        cmd.Parameters.Append cmd.CreateParameter("p" & c, adVarWChar, adParamInput, 255, vbNullString)
+    Next c
 
     Dim r As Long
     For r = 2 To lastRow
@@ -1091,28 +1094,23 @@ Private Sub Access_InsertAllRows(ByVal cnn As Object, ByVal ws As Worksheet, ByV
             If Len(Trim$(CStr(ws.Cells(r, 1).Value))) = 0 Then GoTo NextR
         End If
 
-        Dim valList As String
-        valList = ""
-
         For c = 1 To lastCol
-            Dim v As String
-            v = CStr(ws.Cells(r, c).Value)
-            v = Replace(v, "'", "''")
-            valList = valList & "'" & v & "',"
+            Dim v As Variant
+            v = ws.Cells(r, c).Value
+            If IsError(v) Then
+                cmd.Parameters(c - 1).Value = vbNullString
+            Else
+                cmd.Parameters(c - 1).Value = CStr(v)
+            End If
         Next c
-        valList = Left$(valList, Len(valList) - 1)
 
-        cnn.Execute "INSERT INTO [" & tableName & "] (" & colList & ") VALUES (" & valList & ");"
-
+        cmd.Execute , , adCmdText
 NextR:
     Next r
 End Sub
 
 '===========================================================
 ' NORMALIZATION RULES
-' - NA/NR -> Y
-' - Blank/Not Answered -> N
-' - Flip for SA.010.033 and SA.010.028
 '===========================================================
 Private Function NormalizeToYN_WithFlip(ByVal raw As String, Optional ByVal questionId As String = "") As String
     Dim s As String
@@ -1382,13 +1380,8 @@ Private Function GetUniqueCleanHeaders(ByVal ws As Worksheet, ByVal lastCol As L
         baseName = CleanAccessFieldName(CStr(ws.Cells(1, c).Value))
         If Len(baseName) = 0 Then baseName = "Col" & c
 
-        'Access field names can't start with a number safely in some cases
-        If Len(baseName) > 0 Then
-            If Mid$(baseName, 1, 1) Like "#" Then baseName = "F_" & baseName
-        End If
-
-        'keep names reasonably short
-        If Len(baseName) > 60 Then baseName = Left$(baseName, 60)
+        'Access field can't start with a digit
+        If baseName Like "#*" Then baseName = "F_" & baseName
 
         k = LCase$(baseName)
         If Not used.Exists(k) Then
@@ -1420,5 +1413,10 @@ Private Function CleanAccessFieldName(ByVal s As String) As String
     t = Replace(t, "%", "pct")
     t = Replace(t, "#", "num")
     t = Application.WorksheetFunction.Trim(t)
+
+    'Remove leading/trailing underscores
+    Do While Left$(t, 1) = "_": t = Mid$(t, 2): Loop
+    Do While Right$(t, 1) = "_": t = Left$(t, Len(t) - 1): Loop
+
     CleanAccessFieldName = t
 End Function
