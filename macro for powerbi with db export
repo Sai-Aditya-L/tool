@@ -1,0 +1,1336 @@
+Option Explicit
+
+'===========================================================
+' SINGLE-RUN MASTER VBA (ONE MODULE)
+'
+' What this does, in ONE RUN:
+' 1) Build Consolidated Apps List (inventory)  -> Sheet: Consolidated
+' 2) Build Combined Metrics                    -> Sheet: Combined Metrics
+' 3) Clean Combined Metrics (remove junk rows)
+' 4) Build Simple Compliance                   -> Sheet: Simple Compliance
+' 5) Clean Simple Compliance (remove junk rows BEFORE summaries)
+' 6) Build Summaries from Simple Compliance:
+'    - App-SubDomain Compliance (IT Function FIRST column)
+'    - App Compliance Summary
+'    - IT-Policy Compliance Summary
+' 7) Export ALL required tables to Access:
+'    - Creates tables once (if missing)
+'    - Each run: DELETE rows then INSERT fresh rows (keeps relationships/indexes)
+'    - Pulls additional tables from external workbooks in the selected folder
+'===========================================================
+
+'=========================
+' CONFIG: UPDATE THIS PATH
+'=========================
+Private Const ACCESS_DB_PATH As String = "C:\Path\YourDatabase.accdb"
+
+'===========================================================
+' MAIN: ONE-CLICK RUN
+'===========================================================
+Public Sub Run_All_PowerBI_Builds()
+    Const DEBUG_MODE As Boolean = True
+
+    Dim folderPath As String
+    folderPath = PickFolderSafe()
+    If Len(folderPath) = 0 Then Exit Sub
+    If Right$(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
+
+    Dim logWs As Worksheet
+    Set logWs = GetOrCreateSheet(ThisWorkbook, "Log")
+    EnsureLogHeader logWs
+    LogLine logWs, "Run_All_PowerBI_Builds", "Start", "Folder: " & folderPath
+
+    Dim oldSU As Boolean, oldDA As Boolean, oldEE As Boolean
+    oldSU = Application.ScreenUpdating
+    oldDA = Application.DisplayAlerts
+    oldEE = Application.EnableEvents
+
+    On Error GoTo CleanFail
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.EnableEvents = False
+
+    '0) Consolidated Apps List (inventory)
+    Build_ConsolidatedAppsList_FromFolder folderPath, logWs
+
+    '1) Combined Metrics
+    Build_CombinedMetrics_FromFolder folderPath, DEBUG_MODE, logWs
+
+    '1.5) Clean Combined Metrics
+    Clean_Combined_Metrics logWs
+
+    '2) Simple Compliance
+    Build_SimpleCompliance_FromFolder folderPath, logWs
+
+    '2.5) Clean Simple Compliance BEFORE summaries
+    Clean_Simple_Compliance logWs
+
+    '3) Summaries
+    Build_AppAndSubdomain_Summaries_FromSimpleCompliance logWs
+    Build_ITPolicy_Summary_FromSimpleCompliance logWs
+
+    '4) Export everything to Access (create once, refresh data each run)
+    Export_All_To_Access_Upsert ACCESS_DB_PATH, folderPath, logWs
+
+    LogLine logWs, "Run_All_PowerBI_Builds", "OK", "Completed successfully."
+    MsgBox "All done ✅" & vbCrLf & _
+           "Excel sheets built and Access tables refreshed (no drops).", vbInformation
+
+CleanExit:
+    Application.ScreenUpdating = oldSU
+    Application.DisplayAlerts = oldDA
+    Application.EnableEvents = oldEE
+    Exit Sub
+
+CleanFail:
+    Dim msg As String
+    msg = "Error " & Err.Number & ": " & Err.Description
+    LogLine logWs, "Run_All_PowerBI_Builds", "Error", msg
+    MsgBox msg, vbCritical, "Macro failed"
+    Resume CleanExit
+End Sub
+
+'===========================================================
+' PART 0: CONSOLIDATED APPS LIST (inventory)
+' Output: Sheet "Consolidated"
+' Columns: App ID | App Name | DAI ID | Data Class | IT Function | Source File
+'===========================================================
+Private Sub Build_ConsolidatedAppsList_FromFolder(ByVal folderPath As String, ByVal logWs As Worksheet)
+    On Error GoTo Fail
+
+    Dim dest As Worksheet
+    Set dest = GetOrCreateSheet(ThisWorkbook, "Consolidated")
+    dest.Cells.Clear
+    dest.Range("A1:F1").Value = Array("App ID", "App Name", "DAI ID", "Data Class", "IT Function", "Source File")
+    dest.Rows(1).Font.Bold = True
+    dest.Columns("A:F").NumberFormat = "@"
+
+    Dim destRow As Long: destRow = 1
+
+    Dim fileName As String, fullPath As String
+    Dim wb As Workbook, ws As Worksheet
+
+    fileName = Dir(folderPath & "*.xls*")
+    Do While Len(fileName) > 0
+        fullPath = folderPath & fileName
+
+        If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
+            On Error GoTo FileError
+            Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=True, UpdateLinks:=False)
+
+            Set ws = GetTemplateSheet(wb)
+            If ws Is Nothing Then
+                LogLine logWs, fileName, "Skipped", "Consolidated: Template sheet not found."
+                GoTo CloseAndNext
+            End If
+
+            Dim cellAppNameLbl As Range, cellITFuncLbl As Range
+            Dim cellAppIdLbl As Range, cellDataClassLbl As Range, cellDaiIdLbl As Range
+
+            Set cellAppNameLbl = FindTextCell(ws, "Application Name")
+            Set cellITFuncLbl = FindTextCell(ws, "IT Function")
+            Set cellAppIdLbl = FindTextCell(ws, "app id")
+            Set cellDataClassLbl = FindTextCell(ws, "data class")
+            Set cellDaiIdLbl = FindTextCell(ws, "DAI ID")
+
+            If cellAppNameLbl Is Nothing Or cellAppIdLbl Is Nothing Then
+                LogLine logWs, fileName, "Skipped", "Consolidated: Missing required labels (Application Name / app id)."
+                GoTo CloseAndNext
+            End If
+
+            Dim rowAppName As Long, rowITFunc As Long, rowAppId As Long, rowDataClass As Long, rowDaiId As Long
+            rowAppName = cellAppNameLbl.Row
+            rowITFunc = IIf(cellITFuncLbl Is Nothing, 0, cellITFuncLbl.Row)
+            rowAppId = cellAppIdLbl.Row
+            rowDataClass = IIf(cellDataClassLbl Is Nothing, 0, cellDataClassLbl.Row)
+            rowDaiId = IIf(cellDaiIdLbl Is Nothing, 0, cellDaiIdLbl.Row)
+
+            Dim labelCol As Long, startCol As Long, endCol As Long, c As Long
+            labelCol = MinColNonZero(Array( _
+                        cellAppNameLbl.Column, _
+                        IIf(cellITFuncLbl Is Nothing, 0, cellITFuncLbl.Column), _
+                        cellAppIdLbl.Column, _
+                        IIf(cellDataClassLbl Is Nothing, 0, cellDataClassLbl.Column), _
+                        IIf(cellDaiIdLbl Is Nothing, 0, cellDaiIdLbl.Column) _
+                      ))
+            startCol = labelCol + 1
+            endCol = ws.Cells(rowAppName, ws.Columns.Count).End(xlToLeft).Column
+            If endCol < startCol Then
+                LogLine logWs, fileName, "Skipped", "Consolidated: No app columns found."
+                GoTo CloseAndNext
+            End If
+
+            For c = startCol To endCol
+                Dim appName As String, itFunc As String, appId As String, dataClass As String, daiId As String
+                appName = Trim$(ws.Cells(rowAppName, c).Text)
+                If Len(appName) = 0 Then GoTo NextCol
+
+                itFunc = IIf(rowITFunc = 0, "", Trim$(ws.Cells(rowITFunc, c).Text))
+                appId = Trim$(ws.Cells(rowAppId, c).Text)
+                dataClass = IIf(rowDataClass = 0, "", Trim$(ws.Cells(rowDataClass, c).Text))
+                daiId = IIf(rowDaiId = 0, "", Trim$(ws.Cells(rowDaiId, c).Text))
+
+                destRow = destRow + 1
+                dest.Cells(destRow, 1).Value = appId
+                dest.Cells(destRow, 2).Value = appName
+                dest.Cells(destRow, 3).Value = daiId
+                dest.Cells(destRow, 4).Value = dataClass
+                dest.Cells(destRow, 5).Value = itFunc
+                dest.Cells(destRow, 6).Value = fileName
+
+NextCol:
+            Next c
+
+            LogLine logWs, fileName, "OK", "Consolidated imported."
+CloseAndNext:
+            On Error Resume Next
+            wb.Close SaveChanges:=False
+            On Error GoTo 0
+            Set wb = Nothing
+            Set ws = Nothing
+        End If
+
+        fileName = Dir()
+        DoEvents
+    Loop
+
+    dest.Columns.AutoFit
+    Exit Sub
+
+FileError:
+    LogLine logWs, fileName, "Error", "Consolidated: " & Err.Number & " - " & Err.Description
+    On Error Resume Next
+    If Not wb Is Nothing Then wb.Close SaveChanges:=False
+    On Error GoTo 0
+    Resume CloseAndNext
+
+Fail:
+    LogLine logWs, "Build_ConsolidatedAppsList_FromFolder", "Error", Err.Number & " - " & Err.Description
+End Sub
+
+'===========================================================
+' PART 1: COMBINED METRICS
+'===========================================================
+Private Sub Build_CombinedMetrics_FromFolder(ByVal folderPath As String, ByVal DEBUG_MODE As Boolean, ByVal logWs As Worksheet)
+    Dim metricHeaders As Variant
+    metricHeaders = Array( _
+        "Access Control", _
+        "Configuration Management", _
+        "Cryptographic Protection", _
+        "Network Security", _
+        "Non-Prod Environment Controls", _
+        "Protection of Systems and Communications", _
+        "Secure Authentication", _
+        "System Logging & Monitoring", _
+        "System Security Testing", _
+        "Vulnerability management & Scanning", _
+        "Disaster Recovery" _
+    )
+
+    Dim outWs As Worksheet
+    Set outWs = GetOrCreateSheet(ThisWorkbook, "Combined Metrics")
+    outWs.Cells.Clear
+
+    Dim dbgWs As Worksheet
+    If DEBUG_MODE Then
+        Set dbgWs = GetOrCreateSheet(ThisWorkbook, "Debug_N_Triggers")
+        dbgWs.Cells.Clear
+        dbgWs.Range("A1:I1").Value = Array("Source File", "IT Function", "App Name", "Metric", "Trigger Question ID", "Raw Response", "Normalized", "Template Row", "Notes")
+        dbgWs.Rows(1).Font.Bold = True
+    End If
+
+    outWs.Range("A1:D1").Value = Array("IT Function", "Application/Site Name", "Data Class", "Number of Asset")
+
+    Dim m As Long
+    For m = LBound(metricHeaders) To UBound(metricHeaders)
+        outWs.Cells(1, 5 + m).Value = metricHeaders(m)
+    Next m
+
+    Dim hiddenStartCol As Long
+    hiddenStartCol = 5 + (UBound(metricHeaders) + 1)
+    outWs.Cells(1, hiddenStartCol).Value = "App ID"
+    outWs.Cells(1, hiddenStartCol + 1).Value = "DAI ID"
+    outWs.Cells(1, hiddenStartCol + 2).Value = "Source File"
+
+    outWs.Rows(1).Font.Bold = True
+    outWs.Columns.NumberFormat = "@"
+
+    Dim fileName As String, fullPath As String
+    Dim wb As Workbook, ws As Worksheet
+    Dim outRow As Long: outRow = 1
+
+    fileName = Dir(folderPath & "*.xls*")
+    Do While Len(fileName) > 0
+        fullPath = folderPath & fileName
+        If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
+            On Error GoTo FileError
+
+            Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=True, UpdateLinks:=False)
+
+            Set ws = GetTemplateSheet(wb)
+            If ws Is Nothing Then
+                LogLine logWs, fileName, "Skipped", "Combined: Template sheet not found."
+                GoTo CloseAndNext
+            End If
+
+            Dim polSubCol As Long, qidCol As Long, lastRow As Long
+            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 40)
+            If polSubCol = 0 Then
+                LogLine logWs, fileName, "Skipped", "Combined: Could not find 'Policy Sub-Domain' in row 3."
+                GoTo CloseAndNext
+            End If
+
+            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 40)
+            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 40)
+
+            lastRow = ws.Cells(ws.Rows.Count, polSubCol).End(xlUp).Row
+            If lastRow < 7 Then
+                LogLine logWs, fileName, "Skipped", "Combined: No data rows found (expected from row 7)."
+                GoTo CloseAndNext
+            End If
+
+            Dim firstAppCol As Long, lastAppCol As Long, respCol As Long
+            firstAppCol = 8
+            lastAppCol = ws.Cells(2, ws.Columns.Count).End(xlToLeft).Column
+            If lastAppCol < firstAppCol Then
+                LogLine logWs, fileName, "Skipped", "Combined: No app columns found."
+                GoTo CloseAndNext
+            End If
+
+            For respCol = firstAppCol To lastAppCol
+                If IsCommentsColumn(ws, respCol) Then GoTo NextApp
+
+                Dim appName As String, itFunc As String, dataClass As String
+                Dim appId As String, daiId As String, numAsset As String
+
+                appName = Trim$(ws.Cells(2, respCol).Text)
+                If Len(appName) = 0 Then GoTo NextApp
+
+                itFunc = Trim$(ws.Cells(1, respCol).Text)
+                dataClass = Trim$(ws.Cells(5, respCol).Text)
+                appId = Trim$(ws.Cells(4, respCol).Text)
+                daiId = Trim$(ws.Cells(6, respCol).Text)
+                numAsset = GetValueForLabel(ws, "Number of Asset", respCol, 1, 120, 8)
+
+                outRow = outRow + 1
+                outWs.Cells(outRow, 1).Value = itFunc
+                outWs.Cells(outRow, 2).Value = appName
+                outWs.Cells(outRow, 3).Value = dataClass
+                outWs.Cells(outRow, 4).Value = numAsset
+
+                For m = LBound(metricHeaders) To UBound(metricHeaders)
+                    Dim trigQid As String, trigRaw As String, trigNorm As String, trigRow As Long
+                    Dim yn As String
+
+                    yn = ComputeMetricYN(ws, 7, lastRow, polSubCol, qidCol, respCol, CStr(metricHeaders(m)), _
+                                        trigQid, trigRaw, trigNorm, trigRow)
+
+                    outWs.Cells(outRow, 5 + m).Value = yn
+
+                    If DEBUG_MODE Then
+                        If yn = "N" Then
+                            LogDebug dbgWs, fileName, itFunc, appName, CStr(metricHeaders(m)), trigQid, trigRaw, trigNorm, trigRow
+                        End If
+                    End If
+                Next m
+
+                outWs.Cells(outRow, hiddenStartCol).Value = appId
+                outWs.Cells(outRow, hiddenStartCol + 1).Value = daiId
+                outWs.Cells(outRow, hiddenStartCol + 2).Value = fileName
+
+NextApp:
+            Next respCol
+
+            LogLine logWs, fileName, "OK", "Combined updated."
+
+CloseAndNext:
+            On Error Resume Next
+            wb.Close SaveChanges:=False
+            On Error GoTo 0
+            Set wb = Nothing
+            Set ws = Nothing
+        End If
+
+        fileName = Dir()
+        DoEvents
+    Loop
+
+    ApplyMetricsFormatting outWs, 1, outRow, 5, 5 + UBound(metricHeaders)
+    outWs.Columns(hiddenStartCol).Hidden = True
+    outWs.Columns(hiddenStartCol + 1).Hidden = True
+    outWs.Columns(hiddenStartCol + 2).Hidden = True
+    outWs.Columns.AutoFit
+    Exit Sub
+
+FileError:
+    LogLine logWs, fileName, "Error", "Combined: " & Err.Number & " - " & Err.Description
+    On Error Resume Next
+    If Not wb Is Nothing Then wb.Close SaveChanges:=False
+    On Error GoTo 0
+    Resume CloseAndNext
+End Sub
+
+Private Function ComputeMetricYN(ByVal ws As Worksheet, ByVal rStart As Long, ByVal rEnd As Long, _
+                                 ByVal polSubCol As Long, ByVal qidCol As Long, ByVal respCol As Long, _
+                                 ByVal metricName As String, _
+                                 ByRef outTriggerQid As String, ByRef outTriggerRaw As String, _
+                                 ByRef outTriggerNorm As String, ByRef outTriggerRow As Long) As String
+    Dim r As Long, anyY As Boolean
+    anyY = False
+    outTriggerQid = "": outTriggerRaw = "": outTriggerNorm = "": outTriggerRow = 0
+
+    For r = rStart To rEnd
+        If Canonical(ws.Cells(r, polSubCol).Text) = Canonical(metricName) Then
+            Dim qid As String, raw As String, yn As String
+            qid = IIf(qidCol > 0, Trim$(CStr(ws.Cells(r, qidCol).Text)), "")
+            raw = CStr(ws.Cells(r, respCol).Text)
+
+            yn = NormalizeToYN_WithFlip(raw, qid)
+
+            If yn = "N" Then
+                outTriggerQid = qid
+                outTriggerRaw = Trim$(raw)
+                outTriggerNorm = "N"
+                outTriggerRow = r
+                ComputeMetricYN = "N"
+                Exit Function
+            ElseIf yn = "Y" Then
+                anyY = True
+            End If
+        End If
+    Next r
+
+    If anyY Then
+        ComputeMetricYN = "Y"
+    Else
+        ComputeMetricYN = ""
+    End If
+End Function
+
+'===========================================================
+' CLEAN: COMBINED METRICS
+' removes extra header/separator rows
+'===========================================================
+Private Sub Clean_Combined_Metrics(ByVal logWs As Worksheet)
+    On Error GoTo Fail
+
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Worksheets("Combined Metrics")
+
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+    If lastRow < 2 Then
+        LogLine logWs, "Clean_Combined_Metrics", "Skipped", "No rows."
+        Exit Sub
+    End If
+
+    Dim r As Long, removed As Long
+    removed = 0
+
+    For r = lastRow To 2 Step -1
+        Dim a As String, b As String, c As String
+        a = LCase$(Trim$(CStr(ws.Cells(r, 1).Value)))
+        b = LCase$(Trim$(CStr(ws.Cells(r, 2).Value)))
+        c = LCase$(Trim$(CStr(ws.Cells(r, 3).Value)))
+
+        If a = "it function" Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+        If b = "application name" Or b = "application/site name" Or b = "application/site" Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+        If c = "data class" Or c = "dataclass" Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+        If Len(b) = 0 Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+
+NextR:
+    Next r
+
+    LogLine logWs, "Clean_Combined_Metrics", "OK", "Removed rows: " & removed
+    Exit Sub
+
+Fail:
+    LogLine logWs, "Clean_Combined_Metrics", "Error", Err.Number & " - " & Err.Description
+End Sub
+
+'===========================================================
+' PART 2: SIMPLE COMPLIANCE (row-level)
+'===========================================================
+Private Sub Build_SimpleCompliance_FromFolder(ByVal folderPath As String, ByVal logWs As Worksheet)
+    Dim outWs As Worksheet
+    Set outWs = GetOrCreateSheet(ThisWorkbook, "Simple Compliance")
+    outWs.Cells.Clear
+
+    outWs.Range("A1:F1").Value = Array("IT Function", "App Name", "Data Class", "Question ID", "Policy Sub-Domain", "Compliance")
+    outWs.Rows(1).Font.Bold = True
+    outWs.Columns.NumberFormat = "@"
+
+    Dim outRow As Long: outRow = 1
+
+    Dim fileName As String, fullPath As String
+    Dim wb As Workbook, ws As Worksheet
+
+    fileName = Dir(folderPath & "*.xls*")
+    Do While Len(fileName) > 0
+        fullPath = folderPath & fileName
+        If StrComp(fullPath, ThisWorkbook.FullName, vbTextCompare) <> 0 Then
+            On Error GoTo FileError
+
+            Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=True, UpdateLinks:=False)
+
+            Set ws = GetTemplateSheet(wb)
+            If ws Is Nothing Then
+                LogLine logWs, fileName, "Skipped", "Simple: Template sheet not found."
+                GoTo CloseAndNext
+            End If
+
+            Dim qidCol As Long, polSubCol As Long, lastRow As Long
+            qidCol = FindHeaderInRow(ws, 3, "Question ID", 1, 40)
+            If qidCol = 0 Then qidCol = FindHeaderInRow(ws, 3, "QuestionID", 1, 40)
+            polSubCol = FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 40)
+
+            If qidCol = 0 Then
+                LogLine logWs, fileName, "Skipped", "Simple: Could not find 'Question ID' in row 3."
+                GoTo CloseAndNext
+            End If
+
+            lastRow = ws.Cells(ws.Rows.Count, qidCol).End(xlUp).Row
+            If lastRow < 7 Then
+                LogLine logWs, fileName, "Skipped", "Simple: No data rows found (expected from row 7)."
+                GoTo CloseAndNext
+            End If
+
+            Dim lastAppCol As Long, appCol As Long, r As Long
+            lastAppCol = ws.Cells(2, ws.Columns.Count).End(xlToLeft).Column
+
+            Dim firstAppCol As Long
+            firstAppCol = 9
+            If lastAppCol < firstAppCol Then firstAppCol = 8
+            If lastAppCol < firstAppCol Then
+                LogLine logWs, fileName, "Skipped", "Simple: No app columns found."
+                GoTo CloseAndNext
+            End If
+
+            For appCol = firstAppCol To lastAppCol
+                Dim itFunc As String, appName As String, dataClass As String
+                itFunc = Trim$(ws.Cells(1, appCol).Text)
+                appName = Trim$(ws.Cells(2, appCol).Text)
+                dataClass = Trim$(ws.Cells(5, appCol).Text)
+                If Len(appName) = 0 Then GoTo NextApp
+
+                For r = 7 To lastRow
+                    Dim qid As String, polSub As String, raw As String, comp As String
+                    qid = Trim$(ws.Cells(r, qidCol).Text)
+                    If Len(qid) = 0 Then GoTo NextRow
+
+                    polSub = IIf(polSubCol > 0, Trim$(ws.Cells(r, polSubCol).Text), "")
+                    raw = Trim$(ws.Cells(r, appCol).Text)
+                    comp = NormalizeToYN_WithFlip(raw, qid)
+
+                    outRow = outRow + 1
+                    outWs.Cells(outRow, 1).Value = itFunc
+                    outWs.Cells(outRow, 2).Value = appName
+                    outWs.Cells(outRow, 3).Value = dataClass
+                    outWs.Cells(outRow, 4).Value = qid
+                    outWs.Cells(outRow, 5).Value = polSub
+                    outWs.Cells(outRow, 6).Value = comp
+NextRow:
+                Next r
+NextApp:
+            Next appCol
+
+            LogLine logWs, fileName, "OK", "Simple updated."
+
+CloseAndNext:
+            On Error Resume Next
+            wb.Close SaveChanges:=False
+            On Error GoTo 0
+            Set wb = Nothing
+            Set ws = Nothing
+        End If
+
+        fileName = Dir()
+        DoEvents
+    Loop
+
+    outWs.Columns.AutoFit
+    Exit Sub
+
+FileError:
+    LogLine logWs, fileName, "Error", "Simple: " & Err.Number & " - " & Err.Description
+    On Error Resume Next
+    If Not wb Is Nothing Then wb.Close SaveChanges:=False
+    On Error GoTo 0
+    Resume CloseAndNext
+End Sub
+
+'===========================================================
+' CLEAN: SIMPLE COMPLIANCE BEFORE SUMMARIES
+' - remove rows where QID contains "row"
+' - remove rows with blank Data Class
+' - remove rows with blank Policy Sub-Domain
+' - remove header junk rows
+'===========================================================
+Private Sub Clean_Simple_Compliance(ByVal logWs As Worksheet)
+    On Error GoTo Fail
+
+    Dim ws As Worksheet
+    Set ws = ThisWorkbook.Worksheets("Simple Compliance")
+
+    Dim lastRow As Long
+    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    If lastRow < 2 Then
+        LogLine logWs, "Clean_Simple_Compliance", "Skipped", "No rows."
+        Exit Sub
+    End If
+
+    Dim r As Long, removed As Long
+    removed = 0
+
+    For r = lastRow To 2 Step -1
+        Dim itf As String, app As String, dc As String, qid As String, psd As String
+        itf = LCase$(Trim$(CStr(ws.Cells(r, 1).Value)))
+        app = LCase$(Trim$(CStr(ws.Cells(r, 2).Value)))
+        dc = Trim$(CStr(ws.Cells(r, 3).Value))
+        qid = Trim$(CStr(ws.Cells(r, 4).Value))
+        psd = Trim$(CStr(ws.Cells(r, 5).Value))
+
+        If itf = "it function" Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+        If app = "application name" Or app = "application/site name" Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+        If LCase$(dc) = "data class" Or LCase$(dc) = "dataclass" Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+
+        If InStr(1, LCase$(qid), "row", vbTextCompare) > 0 Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+        If Len(Trim$(dc)) = 0 Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+        If Len(Trim$(psd)) = 0 Then ws.Rows(r).Delete: removed = removed + 1: GoTo NextR
+
+NextR:
+    Next r
+
+    LogLine logWs, "Clean_Simple_Compliance", "OK", "Removed rows: " & removed
+    Exit Sub
+
+Fail:
+    LogLine logWs, "Clean_Simple_Compliance", "Error", Err.Number & " - " & Err.Description
+End Sub
+
+'===========================================================
+' PART 3: SUMMARIES
+'===========================================================
+Private Sub Build_AppAndSubdomain_Summaries_FromSimpleCompliance(ByVal logWs As Worksheet)
+    On Error GoTo Fail
+
+    Dim wsSrc As Worksheet
+    Set wsSrc = ThisWorkbook.Worksheets("Simple Compliance")
+
+    Dim wsOut1 As Worksheet, wsOut2 As Worksheet
+    Set wsOut1 = GetOrCreateSheet(ThisWorkbook, "App-SubDomain Compliance")
+    Set wsOut2 = GetOrCreateSheet(ThisWorkbook, "App Compliance Summary")
+    wsOut1.Cells.Clear
+    wsOut2.Cells.Clear
+
+    Dim lastRow As Long
+    lastRow = wsSrc.Cells(wsSrc.Rows.Count, "B").End(xlUp).Row
+    If lastRow < 2 Then
+        LogLine logWs, "Build_AppAndSubdomain_Summaries", "Skipped", "No data in Simple Compliance."
+        Exit Sub
+    End If
+
+    Dim dictY_AppSub As Object, dictN_AppSub As Object
+    Dim dictY_App As Object, dictN_App As Object
+    Set dictY_AppSub = CreateObject("Scripting.Dictionary")
+    Set dictN_AppSub = CreateObject("Scripting.Dictionary")
+    Set dictY_App = CreateObject("Scripting.Dictionary")
+    Set dictN_App = CreateObject("Scripting.Dictionary")
+
+    Dim r As Long
+    For r = 2 To lastRow
+        Dim itFunc As String, appName As String, subD As String, v As String
+        itFunc = Trim$(CStr(wsSrc.Cells(r, 1).Value))
+        appName = Trim$(CStr(wsSrc.Cells(r, 2).Value))
+        subD = Trim$(CStr(wsSrc.Cells(r, 5).Value))
+        v = UCase$(Trim$(CStr(wsSrc.Cells(r, 6).Value)))
+
+        If Len(itFunc) = 0 Or Len(appName) = 0 Or Len(subD) = 0 Then GoTo NextR
+        If v <> "Y" And v <> "N" Then GoTo NextR
+
+        If Not dictY_App.Exists(appName) Then
+            dictY_App(appName) = 0
+            dictN_App(appName) = 0
+        End If
+        If v = "Y" Then
+            dictY_App(appName) = CLng(dictY_App(appName)) + 1
+        Else
+            dictN_App(appName) = CLng(dictN_App(appName)) + 1
+        End If
+
+        Dim key As String
+        key = itFunc & "||" & appName & "||" & subD
+        If Not dictY_AppSub.Exists(key) Then
+            dictY_AppSub(key) = 0
+            dictN_AppSub(key) = 0
+        End If
+        If v = "Y" Then
+            dictY_AppSub(key) = CLng(dictY_AppSub(key)) + 1
+        Else
+            dictN_AppSub(key) = CLng(dictN_AppSub(key)) + 1
+        End If
+
+NextR:
+    Next r
+
+    wsOut1.Range("A1:G1").Value = Array("IT Function", "App Name", "Policy Sub-Domain", "Total Y", "Total N", "Total Answered", "Compliance %")
+    wsOut1.Rows(1).Font.Bold = True
+
+    Dim outRow As Long: outRow = 2
+    Dim k As Variant, parts() As String
+    For Each k In dictY_AppSub.Keys
+        parts = Split(CStr(k), "||")
+
+        Dim yCnt As Long, nCnt As Long, total As Long
+        yCnt = CLng(dictY_AppSub(k))
+        nCnt = CLng(dictN_AppSub(k))
+        total = yCnt + nCnt
+
+        wsOut1.Cells(outRow, 1).Value = parts(0)
+        wsOut1.Cells(outRow, 2).Value = parts(1)
+        wsOut1.Cells(outRow, 3).Value = parts(2)
+        wsOut1.Cells(outRow, 4).Value = yCnt
+        wsOut1.Cells(outRow, 5).Value = nCnt
+        wsOut1.Cells(outRow, 6).Value = total
+        wsOut1.Cells(outRow, 7).Value = IIf(total > 0, yCnt / total, 0)
+        outRow = outRow + 1
+    Next k
+
+    wsOut1.Columns("A:G").AutoFit
+    wsOut1.Columns("G").NumberFormat = "0.00%"
+
+    wsOut2.Range("A1:E1").Value = Array("App Name", "Total Y", "Total N", "Total Answered", "Compliance %")
+    wsOut2.Rows(1).Font.Bold = True
+
+    outRow = 2
+    For Each k In dictY_App.Keys
+        Dim yA As Long, nA As Long, tA As Long
+        yA = CLng(dictY_App(k))
+        nA = CLng(dictN_App(k))
+        tA = yA + nA
+
+        wsOut2.Cells(outRow, 1).Value = CStr(k)
+        wsOut2.Cells(outRow, 2).Value = yA
+        wsOut2.Cells(outRow, 3).Value = nA
+        wsOut2.Cells(outRow, 4).Value = tA
+        wsOut2.Cells(outRow, 5).Value = IIf(tA > 0, yA / tA, 0)
+        outRow = outRow + 1
+    Next k
+
+    wsOut2.Columns("A:E").AutoFit
+    wsOut2.Columns("E").NumberFormat = "0.00%"
+
+    LogLine logWs, "Build_AppAndSubdomain_Summaries", "OK", "App-SubDomain includes IT Function."
+    Exit Sub
+
+Fail:
+    LogLine logWs, "Build_AppAndSubdomain_Summaries", "Error", Err.Number & " - " & Err.Description
+End Sub
+
+Private Sub Build_ITPolicy_Summary_FromSimpleCompliance(ByVal logWs As Worksheet)
+    On Error GoTo Fail
+
+    Dim wsSrc As Worksheet
+    Set wsSrc = ThisWorkbook.Worksheets("Simple Compliance")
+
+    Dim wsOut As Worksheet
+    Set wsOut = GetOrCreateSheet(ThisWorkbook, "IT-Policy Compliance Summary")
+    wsOut.Cells.Clear
+
+    wsOut.Range("A1:F1").Value = Array("IT Function", "Policy Sub-Domain", "Total Y", "Total N", "Total Answered", "Compliance %")
+    wsOut.Rows(1).Font.Bold = True
+
+    Dim lastRow As Long
+    lastRow = wsSrc.Cells(wsSrc.Rows.Count, "A").End(xlUp).Row
+    If lastRow < 2 Then
+        LogLine logWs, "Build_ITPolicy_Summary", "Skipped", "No data in Simple Compliance."
+        Exit Sub
+    End If
+
+    Dim dictY As Object, dictN As Object, dictAll As Object
+    Set dictY = CreateObject("Scripting.Dictionary")
+    Set dictN = CreateObject("Scripting.Dictionary")
+    Set dictAll = CreateObject("Scripting.Dictionary")
+
+    Dim r As Long
+    For r = 2 To lastRow
+        Dim itFunc As String, pol As String, comp As String
+        itFunc = Trim$(CStr(wsSrc.Cells(r, 1).Value))
+        pol = Trim$(CStr(wsSrc.Cells(r, 5).Value))
+        comp = UCase$(Trim$(CStr(wsSrc.Cells(r, 6).Value)))
+
+        If Len(itFunc) = 0 Or Len(pol) = 0 Then GoTo NextR
+        If comp <> "Y" And comp <> "N" Then GoTo NextR
+
+        Dim key As String
+        key = itFunc & "||" & pol
+        dictAll(key) = True
+
+        If comp = "Y" Then
+            dictY(key) = NzLong(dictY, key) + 1
+        Else
+            dictN(key) = NzLong(dictN, key) + 1
+        End If
+NextR:
+    Next r
+
+    Dim outRow As Long: outRow = 2
+    Dim k As Variant, parts() As String
+    For Each k In dictAll.Keys
+        parts = Split(CStr(k), "||")
+        Dim yCnt As Long, nCnt As Long, total As Long
+        yCnt = NzLong(dictY, k)
+        nCnt = NzLong(dictN, k)
+        total = yCnt + nCnt
+
+        wsOut.Cells(outRow, 1).Value = parts(0)
+        wsOut.Cells(outRow, 2).Value = parts(1)
+        wsOut.Cells(outRow, 3).Value = yCnt
+        wsOut.Cells(outRow, 4).Value = nCnt
+        wsOut.Cells(outRow, 5).Value = total
+        wsOut.Cells(outRow, 6).Value = IIf(total > 0, yCnt / total, 0)
+        outRow = outRow + 1
+    Next k
+
+    wsOut.Columns("A:F").AutoFit
+    wsOut.Columns("F").NumberFormat = "0.00%"
+
+    LogLine logWs, "Build_ITPolicy_Summary", "OK", "IT-Policy summary generated."
+    Exit Sub
+
+Fail:
+    LogLine logWs, "Build_ITPolicy_Summary", "Error", Err.Number & " - " & Err.Description
+End Sub
+
+'===========================================================
+' PART 4: EXPORT TO ACCESS (CREATE ONCE, REFRESH DATA EACH RUN)
+'
+' External workbook layout (based on your mapping):
+' - Control Group/Questions (Power BI)  -> File: All Template Questions One Tab v2.0*  Sheet: outputTemplate -Power BI Upload
+' - Categories1 (Power BI)             -> File: Question ID and Risk Rating Mapping*    Sheet: outputTemplate -Power BI Upload
+' - Riskid (Power BI)                  -> File: Riskid*                                Sheet: Riskid
+' - Russia,BSS,AN,CDS,China,Core_dx,DTS,EPD,RMDx -> File: Macros* sheets same names
+'===========================================================
+Private Sub Export_All_To_Access_Upsert(ByVal accdbPath As String, ByVal folderPath As String, ByVal logWs As Worksheet)
+    On Error GoTo Fail
+
+    If Right$(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
+
+    Dim cnn As Object
+    Set cnn = CreateObject("ADODB.Connection")
+
+    Dim connStr As String
+    connStr = "Provider=Microsoft.ACE.OLEDB.12.0;" & _
+              "Data Source=" & accdbPath & ";" & _
+              "Persist Security Info=False;"
+    cnn.Open connStr
+
+    'A) This workbook outputs
+    Upsert_OneWorksheet_ToAccess ThisWorkbook.Worksheets("Consolidated"), "t_Consolidated", cnn
+    Upsert_OneWorksheet_ToAccess ThisWorkbook.Worksheets("Combined Metrics"), "t_CombinedMetrics", cnn
+    Upsert_OneWorksheet_ToAccess ThisWorkbook.Worksheets("Simple Compliance"), "t_SimpleCompliance", cnn
+    Upsert_OneWorksheet_ToAccess ThisWorkbook.Worksheets("App Compliance Summary"), "t_AppComplianceSummary", cnn
+    Upsert_OneWorksheet_ToAccess ThisWorkbook.Worksheets("App-SubDomain Compliance"), "t_AppSubDomainCompliance", cnn
+    Upsert_OneWorksheet_ToAccess ThisWorkbook.Worksheets("IT-Policy Compliance Summary"), "t_ITPolicyComplianceSummary", cnn
+
+    LogLine logWs, "Export", "OK", "Local tables refreshed."
+
+    'B) External workbooks in selected folder
+    Dim p1 As String, p2 As String, p3 As String, p4 As String
+
+    p1 = FindWorkbookByNameInFolder(folderPath, "All Template Questions One Tab v2.0")
+    If Len(p1) > 0 Then
+        Upsert_FromExternalWorkbook p1, "outputTemplate -Power BI Upload", "t_ControlGroupQuestions", cnn, logWs
+    Else
+        LogLine logWs, "Export", "Skipped", "Missing file: All Template Questions One Tab v2.0"
+    End If
+
+    p2 = FindWorkbookByNameInFolder(folderPath, "Question ID and Risk Rating Mapping")
+    If Len(p2) > 0 Then
+        Upsert_FromExternalWorkbook p2, "outputTemplate -Power BI Upload", "t_Categories1", cnn, logWs
+    Else
+        LogLine logWs, "Export", "Skipped", "Missing file: Question ID and Risk Rating Mapping"
+    End If
+
+    p3 = FindWorkbookByNameInFolder(folderPath, "Riskid")
+    If Len(p3) > 0 Then
+        Upsert_FromExternalWorkbook p3, "Riskid", "t_Riskid", cnn, logWs
+    Else
+        LogLine logWs, "Export", "Skipped", "Missing file: Riskid"
+    End If
+
+    p4 = FindWorkbookByNameInFolder(folderPath, "Macros")
+    If Len(p4) > 0 Then
+        Upsert_FromExternalWorkbook p4, "Russia", "t_Russia", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "BSS", "t_BSS", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "AN", "t_AN", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "CDS", "t_CDS", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "China", "t_China", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "Core_dx", "t_Core_dx", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "DTS", "t_DTS", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "EPD", "t_EPD", cnn, logWs
+        Upsert_FromExternalWorkbook p4, "RMDx", "t_RMDx", cnn, logWs
+    Else
+        LogLine logWs, "Export", "Skipped", "Missing file: Macros"
+    End If
+
+    cnn.Close
+    Set cnn = Nothing
+
+    LogLine logWs, "Export_All_To_Access_Upsert", "OK", "Access refresh completed: " & accdbPath
+    Exit Sub
+
+Fail:
+    LogLine logWs, "Export_All_To_Access_Upsert", "Error", Err.Number & " - " & Err.Description
+    On Error Resume Next
+    If Not cnn Is Nothing Then cnn.Close
+End Sub
+
+Private Sub Upsert_FromExternalWorkbook(ByVal fullPath As String, ByVal sheetName As String, ByVal tableName As String, _
+                                       ByVal cnn As Object, ByVal logWs As Worksheet)
+    Dim wb As Workbook, ws As Worksheet
+    On Error GoTo Fail
+
+    Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=True, UpdateLinks:=False)
+    Set ws = GetSheetByNameLoose(wb, sheetName)
+
+    If ws Is Nothing Then
+        LogLine logWs, wb.Name, "Skipped", "Sheet not found: " & sheetName
+        GoTo CleanExit
+    End If
+
+    Upsert_OneWorksheet_ToAccess ws, tableName, cnn
+    LogLine logWs, wb.Name, "OK", "Refreshed " & sheetName & " -> " & tableName
+
+CleanExit:
+    On Error Resume Next
+    wb.Close SaveChanges:=False
+    On Error GoTo 0
+    Exit Sub
+
+Fail:
+    LogLine logWs, fullPath, "Error", "External upsert failed (" & sheetName & "): " & Err.Number & " - " & Err.Description
+    On Error Resume Next
+    If Not wb Is Nothing Then wb.Close SaveChanges:=False
+End Sub
+
+'===========================================================
+' UPSERT exporter: create table once, then refresh data each run
+' - If table missing: create it using Excel headers (TEXT fields)
+' - If table exists: add missing columns, DELETE rows, INSERT fresh rows
+'===========================================================
+Private Sub Upsert_OneWorksheet_ToAccess(ByVal ws As Worksheet, ByVal tableName As String, ByVal cnn As Object)
+    Dim lastRow As Long, lastCol As Long
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+    If lastCol < 1 Then Exit Sub
+
+    Dim headers() As String
+    headers = GetUniqueCleanHeaders(ws, lastCol)
+
+    If Not AccessTableExists(cnn, tableName) Then
+        CreateTableWithHeaders cnn, tableName, headers
+    Else
+        EnsureAccessColumnsExist cnn, tableName, headers
+    End If
+
+    cnn.Execute "DELETE FROM [" & tableName & "];"
+
+    If lastRow >= 2 Then
+        InsertAllRowsUsingHeaders cnn, ws, tableName, headers, lastRow, lastCol
+    End If
+End Sub
+
+Private Function AccessTableExists(ByVal cnn As Object, ByVal tableName As String) As Boolean
+    On Error GoTo Nope
+    Dim rs As Object
+    Set rs = CreateObject("ADODB.Recordset")
+    rs.Open "SELECT Name FROM MSysObjects WHERE Type In (1,4,6) AND Name='" & Replace(tableName, "'", "''") & "';", cnn, 0, 1
+    AccessTableExists = (Not rs.EOF)
+    rs.Close
+    Set rs = Nothing
+    Exit Function
+
+Nope:
+    On Error Resume Next
+    Dim rs2 As Object
+    Set rs2 = CreateObject("ADODB.Recordset")
+    rs2.Open "SELECT * FROM [" & tableName & "] WHERE 1=0;", cnn, 0, 1
+    AccessTableExists = (Err.Number = 0)
+    Err.Clear
+    On Error GoTo 0
+    If Not rs2 Is Nothing Then
+        On Error Resume Next
+        rs2.Close
+        Set rs2 = Nothing
+        On Error GoTo 0
+    End If
+End Function
+
+Private Sub EnsureAccessColumnsExist(ByVal cnn As Object, ByVal tableName As String, ByVal headers() As String)
+    Dim existing As Object
+    Set existing = CreateObject("Scripting.Dictionary")
+
+    Dim rs As Object
+    Set rs = CreateObject("ADODB.Recordset")
+    rs.Open "SELECT * FROM [" & tableName & "] WHERE 1=0;", cnn, 0, 1
+
+    Dim i As Long
+    For i = 0 To rs.Fields.Count - 1
+        existing(LCase$(rs.Fields(i).Name)) = True
+    Next i
+    rs.Close
+    Set rs = Nothing
+
+    Dim c As Long
+    For c = LBound(headers) To UBound(headers)
+        Dim colName As String
+        colName = headers(c)
+        If Not existing.Exists(LCase$(colName)) Then
+            cnn.Execute "ALTER TABLE [" & tableName & "] ADD COLUMN [" & colName & "] TEXT(255);"
+        End If
+    Next c
+End Sub
+
+Private Sub CreateTableWithHeaders(ByVal cnn As Object, ByVal tableName As String, ByVal headers() As String)
+    Dim sql As String, c As Long
+    sql = "CREATE TABLE [" & tableName & "] ("
+    For c = LBound(headers) To UBound(headers)
+        sql = sql & "[" & headers(c) & "] TEXT(255),"
+    Next c
+    sql = Left$(sql, Len(sql) - 1) & ");"
+    cnn.Execute sql
+End Sub
+
+Private Sub InsertAllRowsUsingHeaders(ByVal cnn As Object, ByVal ws As Worksheet, ByVal tableName As String, _
+                                     ByVal headers() As String, ByVal lastRow As Long, ByVal lastCol As Long)
+    Dim colList As String
+    colList = ""
+    Dim c As Long
+    For c = 1 To lastCol
+        colList = colList & "[" & headers(c) & "],"
+    Next c
+    colList = Left$(colList, Len(colList) - 1)
+
+    Dim r As Long
+    For r = 2 To lastRow
+        Dim valList As String
+        valList = ""
+        For c = 1 To lastCol
+            Dim v As String
+            v = CStr(ws.Cells(r, c).Value)
+            v = Replace(v, "'", "''")
+            valList = valList & "'" & v & "',"
+        Next c
+        valList = Left$(valList, Len(valList) - 1)
+
+        cnn.Execute "INSERT INTO [" & tableName & "] (" & colList & ") VALUES (" & valList & ");"
+    Next r
+End Sub
+
+'===========================================================
+' NORMALIZATION RULES
+' - NA/NR -> Y
+' - Blank/Not Answered -> N
+' - Flip for SA.010.033 and SA.010.028
+'===========================================================
+Private Function NormalizeToYN_WithFlip(ByVal raw As String, Optional ByVal questionId As String = "") As String
+    Dim s As String
+    s = LCase$(Trim$(CStr(raw)))
+    s = Replace(s, vbCr, "")
+    s = Replace(s, vbLf, "")
+    s = Replace(s, " ", "")
+
+    If Len(s) = 0 Then NormalizeToYN_WithFlip = "N": Exit Function
+    If s = "notanswered" Or s = "notanswer" Then NormalizeToYN_WithFlip = "N": Exit Function
+    If s = "na" Or s = "n/a" Or s = "n-a" Then NormalizeToYN_WithFlip = "Y": Exit Function
+    If s = "nr" Or s = "n/r" Or s = "n-r" Then NormalizeToYN_WithFlip = "Y": Exit Function
+
+    Dim q As String
+    q = Canonical(questionId)
+    Dim isFlip As Boolean
+    isFlip = (q = "sa010033" Or q = "sa010028")
+
+    If s = "y" Or s = "yes" Then
+        NormalizeToYN_WithFlip = IIf(isFlip, "N", "Y")
+        Exit Function
+    End If
+
+    If s = "n" Or s = "no" Then
+        NormalizeToYN_WithFlip = IIf(isFlip, "Y", "N")
+        Exit Function
+    End If
+
+    NormalizeToYN_WithFlip = "N"
+End Function
+
+'===========================================================
+' TEMPLATE SHEET PICKER (robust)
+'===========================================================
+Private Function GetTemplateSheet(ByVal wb As Workbook) As Worksheet
+    Dim tryNames As Variant
+    tryNames = Array( _
+        "OutputTemplate- Power BI Upload", _
+        "OutputTemplate-Power BI Upload", _
+        "OutputTemplate - Power BI Upload", _
+        "outputTemplate -Power BI Upload", _
+        "outputTemplate - Power BI Upload" _
+    )
+
+    Dim i As Long
+    For i = LBound(tryNames) To UBound(tryNames)
+        On Error Resume Next
+        Set GetTemplateSheet = wb.Worksheets(CStr(tryNames(i)))
+        On Error GoTo 0
+        If Not GetTemplateSheet Is Nothing Then Exit Function
+    Next i
+
+    Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        If FindHeaderInRow(ws, 3, "Policy Sub-Domain", 1, 60) > 0 Then
+            Set GetTemplateSheet = ws
+            Exit Function
+        End If
+    Next ws
+
+    Set GetTemplateSheet = Nothing
+End Function
+
+'===========================================================
+' FILE + SHEET FINDERS
+'===========================================================
+Private Function FindWorkbookByNameInFolder(ByVal folderPath As String, ByVal partialName As String) As String
+    Dim f As String
+    f = Dir(folderPath & "*.xls*")
+    Do While Len(f) > 0
+        If InStr(1, LCase$(f), LCase$(partialName), vbTextCompare) > 0 Then
+            FindWorkbookByNameInFolder = folderPath & f
+            Exit Function
+        End If
+        f = Dir()
+    Loop
+    FindWorkbookByNameInFolder = ""
+End Function
+
+Private Function GetSheetByNameLoose(ByVal wb As Workbook, ByVal wanted As String) As Worksheet
+    Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        If LCase$(Trim$(ws.Name)) = LCase$(Trim$(wanted)) Then
+            Set GetSheetByNameLoose = ws
+            Exit Function
+        End If
+    Next ws
+    Set GetSheetByNameLoose = Nothing
+End Function
+
+'===========================================================
+' DEBUG LOGGING
+'===========================================================
+Private Sub LogDebug(ByVal dbgWs As Worksheet, ByVal sourceFile As String, ByVal itFunc As String, _
+                    ByVal appName As String, ByVal metricName As String, ByVal trigQid As String, _
+                    ByVal rawResp As String, ByVal norm As String, ByVal templateRow As Long)
+    Dim lr As Long
+    lr = dbgWs.Cells(dbgWs.Rows.Count, "A").End(xlUp).Row + 1
+    dbgWs.Cells(lr, 1).Value = sourceFile
+    dbgWs.Cells(lr, 2).Value = itFunc
+    dbgWs.Cells(lr, 3).Value = appName
+    dbgWs.Cells(lr, 4).Value = metricName
+    dbgWs.Cells(lr, 5).Value = trigQid
+    dbgWs.Cells(lr, 6).Value = rawResp
+    dbgWs.Cells(lr, 7).Value = norm
+    dbgWs.Cells(lr, 8).Value = templateRow
+    dbgWs.Cells(lr, 9).Value = IIf(Len(trigQid) = 0, "Question ID column not found", "")
+End Sub
+
+'===========================================================
+' FORMATTING (Combined Metrics)
+'===========================================================
+Private Sub ApplyMetricsFormatting(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal lastDataRow As Long, _
+                                  ByVal metricsStartCol As Long, ByVal metricsEndCol As Long)
+    If lastDataRow < headerRow + 1 Then Exit Sub
+
+    With ws.Range(ws.Cells(headerRow, 1), ws.Cells(headerRow, metricsEndCol))
+        .Interior.Color = RGB(0, 51, 102)
+        .Font.Color = RGB(255, 255, 255)
+        .Font.Bold = True
+        .HorizontalAlignment = xlCenter
+    End With
+
+    Dim rng As Range
+    Set rng = ws.Range(ws.Cells(headerRow + 1, metricsStartCol), ws.Cells(lastDataRow, metricsEndCol))
+    rng.FormatConditions.Delete
+    rng.HorizontalAlignment = xlCenter
+
+    With rng.FormatConditions.Add(Type:=xlCellValue, Operator:=xlEqual, Formula1:="=""Y""")
+        .Interior.Color = RGB(0, 176, 80)
+        .Font.Color = RGB(255, 255, 255)
+        .Font.Bold = True
+    End With
+
+    With rng.FormatConditions.Add(Type:=xlCellValue, Operator:=xlEqual, Formula1:="=""N""")
+        .Interior.Color = RGB(255, 255, 255)
+        .Font.Color = RGB(0, 0, 0)
+        .Font.Bold = True
+    End With
+
+    ws.Range(ws.Cells(headerRow, 1), ws.Cells(lastDataRow, metricsEndCol)).Borders.LineStyle = xlContinuous
+End Sub
+
+'===========================================================
+' HELPERS
+'===========================================================
+Private Function PickFolderSafe() As String
+    On Error GoTo Fallback
+    Dim fd As FileDialog
+    Set fd = Application.FileDialog(msoFileDialogFolderPicker)
+    fd.Title = "Select folder containing the assessment Excel files (and the external mapping workbooks)"
+    If fd.Show = -1 Then
+        PickFolderSafe = fd.SelectedItems(1)
+    Else
+        PickFolderSafe = ""
+    End If
+    Exit Function
+Fallback:
+    PickFolderSafe = InputBox("Paste the full folder path:", "Folder Path")
+End Function
+
+Private Function GetOrCreateSheet(ByVal wb As Workbook, ByVal sheetName As String) As Worksheet
+    On Error Resume Next
+    Set GetOrCreateSheet = wb.Worksheets(sheetName)
+    On Error GoTo 0
+    If GetOrCreateSheet Is Nothing Then
+        Set GetOrCreateSheet = wb.Worksheets.Add(After:=wb.Worksheets(wb.Worksheets.Count))
+        GetOrCreateSheet.Name = sheetName
+    End If
+End Function
+
+Private Sub EnsureLogHeader(ByVal logWs As Worksheet)
+    If Len(Trim$(CStr(logWs.Cells(1, 1).Value))) = 0 Then
+        logWs.Range("A1:C1").Value = Array("File/Proc", "Status", "Notes")
+        logWs.Rows(1).Font.Bold = True
+    End If
+End Sub
+
+Private Sub LogLine(ByVal logWs As Worksheet, ByVal fileOrProc As String, ByVal status As String, ByVal notes As String)
+    Dim lr As Long
+    lr = logWs.Cells(logWs.Rows.Count, "A").End(xlUp).Row + 1
+    logWs.Cells(lr, 1).Value = fileOrProc
+    logWs.Cells(lr, 2).Value = status
+    logWs.Cells(lr, 3).Value = notes
+End Sub
+
+Private Function FindHeaderInRow(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal headerText As String, _
+                                 ByVal startCol As Long, ByVal endCol As Long) As Long
+    Dim c As Long
+    For c = startCol To endCol
+        If Canonical(ws.Cells(headerRow, c).Text) = Canonical(headerText) Then
+            FindHeaderInRow = c
+            Exit Function
+        End If
+    Next c
+    FindHeaderInRow = 0
+End Function
+
+Private Function Canonical(ByVal s As String) As String
+    Dim i As Long, ch As String, out As String
+    s = LCase$(Trim$(CStr(s)))
+    out = ""
+    For i = 1 To Len(s)
+        ch = Mid$(s, i, 1)
+        If (ch >= "a" And ch <= "z") Or (ch >= "0" And ch <= "9") Then out = out & ch
+    Next i
+    Canonical = out
+End Function
+
+Private Function IsCommentsColumn(ByVal ws As Worksheet, ByVal col As Long) As Boolean
+    IsCommentsColumn = (InStr(1, Canonical(ws.Cells(3, col).Text), "comments", vbTextCompare) > 0)
+End Function
+
+Private Function GetValueForLabel(ByVal ws As Worksheet, ByVal labelText As String, ByVal appCol As Long, _
+                                  ByVal rowStart As Long, ByVal rowEnd As Long, ByVal labelCol As Long) As String
+    Dim r As Long
+    For r = rowStart To rowEnd
+        If Canonical(ws.Cells(r, labelCol).Text) = Canonical(labelText) Then
+            GetValueForLabel = Trim$(ws.Cells(r, appCol).Text)
+            Exit Function
+        End If
+    Next r
+    GetValueForLabel = ""
+End Function
+
+Private Function NzLong(ByVal dict As Object, ByVal key As Variant) As Long
+    If dict Is Nothing Then
+        NzLong = 0
+    ElseIf dict.Exists(key) Then
+        NzLong = CLng(dict(key))
+    Else
+        NzLong = 0
+    End If
+End Function
+
+Private Function FindTextCell(ByVal ws As Worksheet, ByVal needle As String) As Range
+    Dim r As Range
+    On Error Resume Next
+    Set r = ws.UsedRange.Find(What:=needle, LookIn:=xlValues, LookAt:=xlPart, _
+                              SearchOrder:=xlByRows, SearchDirection:=xlNext, MatchCase:=False)
+    On Error GoTo 0
+    Set FindTextCell = r
+End Function
+
+Private Function MinColNonZero(ByVal cols As Variant) As Long
+    Dim i As Long, v As Long, m As Long
+    m = 0
+    For i = LBound(cols) To UBound(cols)
+        v = CLng(cols(i))
+        If v > 0 Then
+            If m = 0 Or v < m Then m = v
+        End If
+    Next i
+    MinColNonZero = m
+End Function
+
+Private Function GetUniqueCleanHeaders(ByVal ws As Worksheet, ByVal lastCol As Long) As String()
+    Dim used As Object
+    Set used = CreateObject("Scripting.Dictionary")
+
+    Dim arr() As String
+    ReDim arr(1 To lastCol)
+
+    Dim c As Long
+    For c = 1 To lastCol
+        Dim baseName As String, finalName As String, k As String, n As Long
+        baseName = CleanAccessFieldName(CStr(ws.Cells(1, c).Value))
+        If Len(baseName) = 0 Then baseName = "Col" & c
+
+        k = LCase$(baseName)
+        If Not used.Exists(k) Then
+            used.Add k, 1
+            finalName = baseName
+        Else
+            n = CLng(used(k)) + 1
+            used(k) = n
+            finalName = baseName & "_" & n
+        End If
+        arr(c) = finalName
+    Next c
+
+    GetUniqueCleanHeaders = arr
+End Function
+
+Private Function CleanAccessFieldName(ByVal s As String) As String
+    Dim t As String
+    t = Trim$(s)
+    t = Replace(t, vbCr, " ")
+    t = Replace(t, vbLf, " ")
+    t = Replace(t, ".", "")
+    t = Replace(t, "/", "_")
+    t = Replace(t, "\", "_")
+    t = Replace(t, "-", "_")
+    t = Replace(t, "&", "and")
+    t = Replace(t, "(", "")
+    t = Replace(t, ")", "")
+    t = Replace(t, "%", "pct")
+    t = Replace(t, "#", "num")
+    t = Application.WorksheetFunction.Trim(t)
+    CleanAccessFieldName = t
+End Function
