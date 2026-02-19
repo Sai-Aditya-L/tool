@@ -1,21 +1,22 @@
 Option Explicit
 
 '===========================================================
-' SINGLE-RUN MASTER VBA (ONE MODULE) - FIXED
+' SINGLE-RUN MASTER VBA (ONE MODULE)
 '
-' Fixes included:
-' 1) CONSOLIDATED FIX:
-'    - Removes rows where App ID (Col A) is blank/empty
-'    - Also avoids writing blank App IDs during build
-'
-' 2) ACCESS EXPORT FIX (NO COMPILE ERRORS):
-'    - All Access helper subs/functions are INCLUDED and names match
-'    - Creates tables if missing (TEXT(255))
-'    - Ensures missing columns exist (ALTER TABLE ADD COLUMN)
+' What this does, in ONE RUN:
+' 1) Build Consolidated Apps List (inventory)  -> Sheet: Consolidated
+' 2) Build Combined Metrics                    -> Sheet: Combined Metrics
+' 3) Clean Combined Metrics (remove junk rows)
+' 4) Build Simple Compliance                   -> Sheet: Simple Compliance
+' 5) Clean Simple Compliance (remove junk rows BEFORE summaries)
+' 6) Build Summaries from Simple Compliance:
+'    - App-SubDomain Compliance (IT Function FIRST column)
+'    - App Compliance Summary
+'    - IT-Policy Compliance Summary
+' 7) Export ALL required tables to Access:
+'    - Creates tables once (if missing)
 '    - Each run: DELETE rows then INSERT fresh rows (keeps relationships/indexes)
-'    - Uses ADODB.Command parameters (avoids quote/escape issues)
-'
-' 3) External workbook imports (same mapping you provided)
+'    - Pulls additional tables from external workbooks in the selected folder
 '===========================================================
 
 '=========================
@@ -51,8 +52,6 @@ Public Sub Run_All_PowerBI_Builds()
 
     '0) Consolidated Apps List (inventory)
     Build_ConsolidatedAppsList_FromFolder folderPath, logWs
-
-    '0.5) CONSOLIDATED FIX: remove rows where App ID is blank (col A)
     Clean_Consolidated_RemoveBlankAppID logWs
 
     '1) Combined Metrics
@@ -76,7 +75,7 @@ Public Sub Run_All_PowerBI_Builds()
 
     LogLine logWs, "Run_All_PowerBI_Builds", "OK", "Completed successfully."
     MsgBox "All done ✅" & vbCrLf & _
-           "Excel sheets built and Access tables refreshed (no drops).", vbInformation
+           "Excel sheets built and Access tables refreshed.", vbInformation
 
 CleanExit:
     Application.ScreenUpdating = oldSU
@@ -164,18 +163,16 @@ Private Sub Build_ConsolidatedAppsList_FromFolder(ByVal folderPath As String, By
 
             For c = startCol To endCol
                 Dim appName As String, itFunc As String, appId As String, dataClass As String, daiId As String
-
                 appName = Trim$(ws.Cells(rowAppName, c).Text)
                 If Len(appName) = 0 Then GoTo NextCol
 
-                appId = Trim$(ws.Cells(rowAppId, c).Text)
-
-                'IMPORTANT: avoid writing blank App IDs
-                If Len(Trim$(appId)) = 0 Then GoTo NextCol
-
                 itFunc = IIf(rowITFunc = 0, "", Trim$(ws.Cells(rowITFunc, c).Text))
+                appId = Trim$(ws.Cells(rowAppId, c).Text)
                 dataClass = IIf(rowDataClass = 0, "", Trim$(ws.Cells(rowDataClass, c).Text))
                 daiId = IIf(rowDaiId = 0, "", Trim$(ws.Cells(rowDaiId, c).Text))
+
+                '*** CONSOLIDATED FIX: do not write rows with blank App ID ***
+                If Len(Trim$(appId)) = 0 Then GoTo NextCol
 
                 destRow = destRow + 1
                 dest.Cells(destRow, 1).Value = appId
@@ -215,9 +212,6 @@ Fail:
     LogLine logWs, "Build_ConsolidatedAppsList_FromFolder", "Error", Err.Number & " - " & Err.Description
 End Sub
 
-'===========================================================
-' CONSOLIDATED FIX: remove rows where App ID (col A) is blank
-'===========================================================
 Private Sub Clean_Consolidated_RemoveBlankAppID(ByVal logWs As Worksheet)
     On Error GoTo Fail
 
@@ -225,15 +219,11 @@ Private Sub Clean_Consolidated_RemoveBlankAppID(ByVal logWs As Worksheet)
     Set ws = ThisWorkbook.Worksheets("Consolidated")
 
     Dim lastRow As Long
-    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
-    If lastRow < 2 Then
-        LogLine logWs, "Clean_Consolidated_RemoveBlankAppID", "Skipped", "No rows."
-        Exit Sub
-    End If
+    lastRow = LastUsedRow(ws)
+    If lastRow < 2 Then Exit Sub
 
     Dim r As Long, removed As Long
     removed = 0
-
     For r = lastRow To 2 Step -1
         If Len(Trim$(CStr(ws.Cells(r, 1).Value))) = 0 Then
             ws.Rows(r).Delete
@@ -241,11 +231,11 @@ Private Sub Clean_Consolidated_RemoveBlankAppID(ByVal logWs As Worksheet)
         End If
     Next r
 
-    LogLine logWs, "Clean_Consolidated_RemoveBlankAppID", "OK", "Removed rows: " & removed
+    LogLine logWs, "Clean_Consolidated", "OK", "Removed rows with blank App ID: " & removed
     Exit Sub
 
 Fail:
-    LogLine logWs, "Clean_Consolidated_RemoveBlankAppID", "Error", Err.Number & " - " & Err.Description
+    LogLine logWs, "Clean_Consolidated", "Error", Err.Number & " - " & Err.Description
 End Sub
 
 '===========================================================
@@ -350,7 +340,7 @@ Private Sub Build_CombinedMetrics_FromFolder(ByVal folderPath As String, ByVal D
                 dataClass = Trim$(ws.Cells(5, respCol).Text)
                 appId = Trim$(ws.Cells(4, respCol).Text)
                 daiId = Trim$(ws.Cells(6, respCol).Text)
-                numAsset = GetValueForLabel(ws, "Number of Asset", respCol, 1, 120, 8)
+                numAsset = GetValueForLabel(ws, "Number of Asset", respCol, 1, 200, 8)
 
                 outRow = outRow + 1
                 outWs.Cells(outRow, 1).Value = itFunc
@@ -457,7 +447,7 @@ Private Sub Clean_Combined_Metrics(ByVal logWs As Worksheet)
     Set ws = ThisWorkbook.Worksheets("Combined Metrics")
 
     Dim lastRow As Long
-    lastRow = ws.Cells(ws.Rows.Count, "B").End(xlUp).Row
+    lastRow = LastUsedRow(ws)
     If lastRow < 2 Then
         LogLine logWs, "Clean_Combined_Metrics", "Skipped", "No rows."
         Exit Sub
@@ -608,7 +598,7 @@ Private Sub Clean_Simple_Compliance(ByVal logWs As Worksheet)
     Set ws = ThisWorkbook.Worksheets("Simple Compliance")
 
     Dim lastRow As Long
-    lastRow = ws.Cells(ws.Rows.Count, "A").End(xlUp).Row
+    lastRow = LastUsedRow(ws)
     If lastRow < 2 Then
         LogLine logWs, "Clean_Simple_Compliance", "Skipped", "No rows."
         Exit Sub
@@ -659,7 +649,7 @@ Private Sub Build_AppAndSubdomain_Summaries_FromSimpleCompliance(ByVal logWs As 
     wsOut2.Cells.Clear
 
     Dim lastRow As Long
-    lastRow = wsSrc.Cells(wsSrc.Rows.Count, "B").End(xlUp).Row
+    lastRow = LastUsedRow(wsSrc)
     If lastRow < 2 Then
         LogLine logWs, "Build_AppAndSubdomain_Summaries", "Skipped", "No data in Simple Compliance."
         Exit Sub
@@ -776,7 +766,7 @@ Private Sub Build_ITPolicy_Summary_FromSimpleCompliance(ByVal logWs As Worksheet
     wsOut.Rows(1).Font.Bold = True
 
     Dim lastRow As Long
-    lastRow = wsSrc.Cells(wsSrc.Rows.Count, "A").End(xlUp).Row
+    lastRow = LastUsedRow(wsSrc)
     If lastRow < 2 Then
         LogLine logWs, "Build_ITPolicy_Summary", "Skipped", "No data in Simple Compliance."
         Exit Sub
@@ -839,21 +829,11 @@ End Sub
 
 '===========================================================
 ' PART 4: EXPORT TO ACCESS (CREATE ONCE, REFRESH DATA EACH RUN)
-'
-' Mapping (your list):
-' - Control Group/Questions -> All Template Questions One Tab v2.0* / outputTemplate -Power BI Upload
-' - Categories1            -> Question ID and Risk Rating Mapping* / outputTemplate -Power BI Upload
-' - Riskid                 -> Riskid* / Riskid
-' - Russia,BSS,AN,CDS,China,Core_dx,DTS,EPD,RMDx -> Macros* sheets same names
 '===========================================================
 Private Sub Export_All_To_Access_Upsert(ByVal accdbPath As String, ByVal folderPath As String, ByVal logWs As Worksheet)
     On Error GoTo Fail
 
     If Right$(folderPath, 1) <> "\" Then folderPath = folderPath & "\"
-
-    If Len(Dir(accdbPath)) = 0 Then
-        Err.Raise vbObjectError + 101, "Export_All_To_Access_Upsert", "Access DB not found: " & accdbPath
-    End If
 
     Dim cnn As Object
     Set cnn = CreateObject("ADODB.Connection")
@@ -893,6 +873,7 @@ Private Sub Export_All_To_Access_Upsert(ByVal accdbPath As String, ByVal folderP
 
     p3 = FindWorkbookByNameInFolder(folderPath, "Riskid")
     If Len(p3) > 0 Then
+        'Sheet name might be "Riskid" or "RiskID" etc. We'll locate loosely.
         Upsert_FromExternalWorkbook p3, "Riskid", "t_Riskid", cnn, logWs
     Else
         LogLine logWs, "Export", "Skipped", "Missing file: Riskid"
@@ -931,7 +912,14 @@ Private Sub Upsert_FromExternalWorkbook(ByVal fullPath As String, ByVal sheetNam
     On Error GoTo Fail
 
     Set wb = Workbooks.Open(fileName:=fullPath, ReadOnly:=True, UpdateLinks:=False)
+
+    'Loose matching: exact name OR trimmed/case-insensitive
     Set ws = GetSheetByNameLoose(wb, sheetName)
+
+    If ws Is Nothing Then
+        'Try second pass: contains match
+        Set ws = GetSheetByNameContains(wb, sheetName)
+    End If
 
     If ws Is Nothing Then
         LogLine logWs, wb.Name, "Skipped", "Sheet not found: " & sheetName
@@ -939,7 +927,7 @@ Private Sub Upsert_FromExternalWorkbook(ByVal fullPath As String, ByVal sheetNam
     End If
 
     Access_RefreshTableFromSheet cnn, ws, tableName, False
-    LogLine logWs, wb.Name, "OK", "Refreshed " & sheetName & " -> " & tableName
+    LogLine logWs, wb.Name, "OK", "Refreshed " & ws.Name & " -> " & tableName
 
 CleanExit:
     On Error Resume Next
@@ -954,42 +942,45 @@ Fail:
 End Sub
 
 '===========================================================
-' ACCESS CORE EXPORTER (NO MISSING SUBS)
-' - Creates table once if missing
-' - Ensures columns exist
-' - DELETE rows then INSERT fresh rows
-' - Optional skipBlankFirstColRows: ignores rows where col A blank
+' ACCESS EXPORT CORE (NO COMPILE ERRORS)
+'
+' - Robust sheet bounds using Find("*") (fixes "10 rows only" issue)
+' - Header row = UsedRange.Row
+' - Create table if missing (TEXT fields)
+' - Ensure columns exist
+' - DELETE rows
+' - INSERT fresh rows (parameterized, safer)
+'
+' skipBlankFirstColRows:
+'   True  -> ignores data rows where first data column is blank
+'   False -> inserts all rows
 '===========================================================
 Private Sub Access_RefreshTableFromSheet(ByVal cnn As Object, ByVal ws As Worksheet, ByVal tableName As String, _
                                         Optional ByVal skipBlankFirstColRows As Boolean = False)
-    Dim lastCol As Long, lastRow As Long
-    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
-    If lastCol < 1 Then Exit Sub
 
-    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
-    If lastRow < 1 Then Exit Sub
+    Dim headerRow As Long, firstCol As Long, lastRow As Long, lastCol As Long
+    GetSheetBounds ws, headerRow, firstCol, lastRow, lastCol
+    If lastCol < firstCol Then Exit Sub
+    If lastRow <= headerRow Then Exit Sub
 
     Dim headers() As String
-    headers = GetUniqueCleanHeaders(ws, lastCol)
+    headers = GetUniqueCleanHeaders_FromRow(ws, headerRow, firstCol, lastCol)
 
     If Not Access_TableExists(cnn, tableName) Then
-        Access_CreateTable cnn, tableName, headers
+        Access_CreateTable cnn, tableName, headers   '<<< fixed: headers passed ByRef
     Else
         Access_EnsureColumnsExist cnn, tableName, headers
     End If
 
-    'Refresh rows (keeps relationships/indexes)
     cnn.Execute "DELETE FROM [" & tableName & "];"
 
-    If lastRow >= 2 Then
-        Access_InsertAllRows cnn, ws, tableName, headers, lastRow, lastCol, skipBlankFirstColRows
-    End If
+    Access_InsertAllRows cnn, ws, tableName, headers, headerRow + 1, lastRow, firstCol, lastCol, skipBlankFirstColRows
 End Sub
 
 Private Function Access_TableExists(ByVal cnn As Object, ByVal tableName As String) As Boolean
     On Error GoTo Nope
 
-    'ADOX Catalog is reliable even for brand-new empty DBs
+    'ADOX works great even for brand-new empty DBs
     Dim cat As Object, t As Object
     Set cat = CreateObject("ADOX.Catalog")
     Set cat.ActiveConnection = cnn
@@ -1005,23 +996,11 @@ Private Function Access_TableExists(ByVal cnn As Object, ByVal tableName As Stri
     Exit Function
 
 Nope:
-    'Fallback: try opening table schema
-    On Error Resume Next
-    Dim rs As Object
-    Set rs = CreateObject("ADODB.Recordset")
-    rs.Open "SELECT * FROM [" & tableName & "] WHERE 1=0;", cnn, 0, 1
-    Access_TableExists = (Err.Number = 0)
-    Err.Clear
-    On Error GoTo 0
-    If Not rs Is Nothing Then
-        On Error Resume Next
-        rs.Close
-        Set rs = Nothing
-        On Error GoTo 0
-    End If
+    Access_TableExists = False
 End Function
 
-Private Sub Access_CreateTable(ByVal cnn As Object, ByVal tableName As String, ByVal headers() As String)
+'*** IMPORTANT: headers() MUST be ByRef (compile error fix) ***
+Private Sub Access_CreateTable(ByVal cnn As Object, ByVal tableName As String, ByRef headers() As String)
     Dim sql As String, c As Long
     sql = "CREATE TABLE [" & tableName & "] ("
     For c = LBound(headers) To UBound(headers)
@@ -1031,18 +1010,19 @@ Private Sub Access_CreateTable(ByVal cnn As Object, ByVal tableName As String, B
     cnn.Execute sql
 End Sub
 
-Private Sub Access_EnsureColumnsExist(ByVal cnn As Object, ByVal tableName As String, ByVal headers() As String)
+'*** IMPORTANT: headers() MUST be ByRef ***
+Private Sub Access_EnsureColumnsExist(ByVal cnn As Object, ByVal tableName As String, ByRef headers() As String)
     Dim existing As Object
     Set existing = CreateObject("Scripting.Dictionary")
 
-    Dim rs As Object
+    Dim rs As Object, i As Long
     Set rs = CreateObject("ADODB.Recordset")
     rs.Open "SELECT * FROM [" & tableName & "] WHERE 1=0;", cnn, 0, 1
 
-    Dim i As Long
     For i = 0 To rs.Fields.Count - 1
         existing(LCase$(rs.Fields(i).Name)) = True
     Next i
+
     rs.Close
     Set rs = Nothing
 
@@ -1055,62 +1035,145 @@ Private Sub Access_EnsureColumnsExist(ByVal cnn As Object, ByVal tableName As St
     Next c
 End Sub
 
+'Parameterized insert avoids quoting issues and weird truncation from SQL string building
 Private Sub Access_InsertAllRows(ByVal cnn As Object, ByVal ws As Worksheet, ByVal tableName As String, _
-                                ByVal headers() As String, ByVal lastRow As Long, ByVal lastCol As Long, _
+                                ByRef headers() As String, _
+                                ByVal rStart As Long, ByVal rEnd As Long, _
+                                ByVal cStart As Long, ByVal cEnd As Long, _
                                 ByVal skipBlankFirstColRows As Boolean)
-    'Parameterised insert prevents quote issues and reduces failures.
-    Const adCmdText As Long = 1
-    Const adParamInput As Long = 1
-    Const adVarWChar As Long = 202
 
-    Dim colList As String, qList As String
-    Dim c As Long
-    colList = ""
-    qList = ""
-    For c = 1 To lastCol
-        colList = colList & "[" & headers(c) & "],"
-        qList = qList & "?,"
-    Next c
-    colList = Left$(colList, Len(colList) - 1)
-    qList = Left$(qList, Len(qList) - 1)
-
-    Dim sql As String
-    sql = "INSERT INTO [" & tableName & "] (" & colList & ") VALUES (" & qList & ");"
+    If rEnd < rStart Then Exit Sub
 
     Dim cmd As Object
     Set cmd = CreateObject("ADODB.Command")
-    cmd.ActiveConnection = cnn
-    cmd.CommandType = adCmdText
-    cmd.CommandText = sql
+    Set cmd.ActiveConnection = cnn
+    cmd.CommandType = 1 'adCmdText
 
-    'Create parameters once
-    For c = 1 To lastCol
-        cmd.Parameters.Append cmd.CreateParameter("p" & c, adVarWChar, adParamInput, 255, vbNullString)
+    Dim colList As String, qMarks As String
+    Dim c As Long, idx As Long
+    colList = ""
+    qMarks = ""
+
+    idx = 0
+    For c = LBound(headers) To UBound(headers)
+        colList = colList & "[" & headers(c) & "],"
+        qMarks = qMarks & "?,"
+        idx = idx + 1
     Next c
 
-    Dim r As Long
-    For r = 2 To lastRow
+    colList = Left$(colList, Len(colList) - 1)
+    qMarks = Left$(qMarks, Len(qMarks) - 1)
+
+    cmd.CommandText = "INSERT INTO [" & tableName & "] (" & colList & ") VALUES (" & qMarks & ");"
+
+    'Create parameters once
+    cmd.Parameters.Refresh
+    cmd.Parameters.Delete 0 'some providers auto-add; safe to clear if exists
+    On Error Resume Next
+    Do While cmd.Parameters.Count > 0
+        cmd.Parameters.Delete 0
+    Loop
+    On Error GoTo 0
+
+    For c = 0 To (UBound(headers) - LBound(headers))
+        'adVarWChar = 202, adParamInput = 1
+        cmd.Parameters.Append cmd.CreateParameter("p" & (c + 1), 202, 1, 255, vbNullString)
+    Next c
+
+    Dim r As Long, cc As Long
+    For r = rStart To rEnd
         If skipBlankFirstColRows Then
-            If Len(Trim$(CStr(ws.Cells(r, 1).Value))) = 0 Then GoTo NextR
+            If Len(Trim$(CStr(ws.Cells(r, cStart).Value))) = 0 Then GoTo NextR
         End If
 
-        For c = 1 To lastCol
-            Dim v As Variant
-            v = ws.Cells(r, c).Value
-            If IsError(v) Then
-                cmd.Parameters(c - 1).Value = vbNullString
-            Else
-                cmd.Parameters(c - 1).Value = CStr(v)
-            End If
+        cc = 0
+        For c = cStart To cEnd
+            Dim v As String
+            v = CStr(ws.Cells(r, c).Value)
+
+            'Clean odd characters that can break inserts
+            v = Replace(v, vbCr, " ")
+            v = Replace(v, vbLf, " ")
+            v = Replace(v, Chr$(0), "")
+            v = WorksheetFunction.Trim(v)
+
+            cmd.Parameters(cc).Value = Left$(v, 255)
+            cc = cc + 1
         Next c
 
-        cmd.Execute , , adCmdText
+        cmd.Execute , , 128 'adExecuteNoRecords
 NextR:
     Next r
 End Sub
 
 '===========================================================
+' SHEET BOUNDS (fixes "only 10 rows inserted" problem)
+'===========================================================
+Private Sub GetSheetBounds(ByVal ws As Worksheet, ByRef headerRow As Long, ByRef firstCol As Long, ByRef lastRow As Long, ByRef lastCol As Long)
+    On Error GoTo Fallback
+
+    If ws.UsedRange Is Nothing Then GoTo Fallback
+
+    headerRow = ws.UsedRange.Row
+    firstCol = ws.UsedRange.Column
+
+    Dim lastCell As Range
+    Set lastCell = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+                                 LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlPrevious, MatchCase:=False)
+    If lastCell Is Nothing Then GoTo Fallback
+    lastRow = lastCell.Row
+
+    Set lastCell = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+                                 LookAt:=xlPart, SearchOrder:=xlByColumns, SearchDirection:=xlPrevious, MatchCase:=False)
+    If lastCell Is Nothing Then GoTo Fallback
+    lastCol = lastCell.Column
+
+    Exit Sub
+
+Fallback:
+    headerRow = 1
+    firstCol = 1
+    lastRow = ws.Cells(ws.Rows.Count, 1).End(xlUp).Row
+    lastCol = ws.Cells(1, ws.Columns.Count).End(xlToLeft).Column
+End Sub
+
+Private Function GetUniqueCleanHeaders_FromRow(ByVal ws As Worksheet, ByVal headerRow As Long, ByVal firstCol As Long, ByVal lastCol As Long) As String()
+    Dim used As Object
+    Set used = CreateObject("Scripting.Dictionary")
+
+    Dim arr() As String
+    ReDim arr(0 To (lastCol - firstCol))
+
+    Dim c As Long, outIdx As Long
+    outIdx = 0
+
+    For c = firstCol To lastCol
+        Dim baseName As String, finalName As String, k As String, n As Long
+        baseName = CleanAccessFieldName(CStr(ws.Cells(headerRow, c).Value))
+        If Len(baseName) = 0 Then baseName = "Col" & c
+
+        k = LCase$(baseName)
+        If Not used.Exists(k) Then
+            used.Add k, 1
+            finalName = baseName
+        Else
+            n = CLng(used(k)) + 1
+            used(k) = n
+            finalName = baseName & "_" & n
+        End If
+
+        arr(outIdx) = finalName
+        outIdx = outIdx + 1
+    Next c
+
+    GetUniqueCleanHeaders_FromRow = arr
+End Function
+
+'===========================================================
 ' NORMALIZATION RULES
+' - NA/NR -> Y
+' - Blank/Not Answered -> N
+' - Flip for SA.010.033 and SA.010.028
 '===========================================================
 Private Function NormalizeToYN_WithFlip(ByVal raw As String, Optional ByVal questionId As String = "") As String
     Dim s As String
@@ -1199,6 +1262,17 @@ Private Function GetSheetByNameLoose(ByVal wb As Workbook, ByVal wanted As Strin
         End If
     Next ws
     Set GetSheetByNameLoose = Nothing
+End Function
+
+Private Function GetSheetByNameContains(ByVal wb As Workbook, ByVal wanted As String) As Worksheet
+    Dim ws As Worksheet
+    For Each ws In wb.Worksheets
+        If InStr(1, LCase$(ws.Name), LCase$(wanted), vbTextCompare) > 0 Then
+            Set GetSheetByNameContains = ws
+            Exit Function
+        End If
+    Next ws
+    Set GetSheetByNameContains = Nothing
 End Function
 
 '===========================================================
@@ -1367,37 +1441,6 @@ Private Function MinColNonZero(ByVal cols As Variant) As Long
     MinColNonZero = m
 End Function
 
-Private Function GetUniqueCleanHeaders(ByVal ws As Worksheet, ByVal lastCol As Long) As String()
-    Dim used As Object
-    Set used = CreateObject("Scripting.Dictionary")
-
-    Dim arr() As String
-    ReDim arr(1 To lastCol)
-
-    Dim c As Long
-    For c = 1 To lastCol
-        Dim baseName As String, finalName As String, k As String, n As Long
-        baseName = CleanAccessFieldName(CStr(ws.Cells(1, c).Value))
-        If Len(baseName) = 0 Then baseName = "Col" & c
-
-        'Access field can't start with a digit
-        If baseName Like "#*" Then baseName = "F_" & baseName
-
-        k = LCase$(baseName)
-        If Not used.Exists(k) Then
-            used.Add k, 1
-            finalName = baseName
-        Else
-            n = CLng(used(k)) + 1
-            used(k) = n
-            finalName = baseName & "_" & n
-        End If
-        arr(c) = finalName
-    Next c
-
-    GetUniqueCleanHeaders = arr
-End Function
-
 Private Function CleanAccessFieldName(ByVal s As String) As String
     Dim t As String
     t = Trim$(s)
@@ -1413,10 +1456,17 @@ Private Function CleanAccessFieldName(ByVal s As String) As String
     t = Replace(t, "%", "pct")
     t = Replace(t, "#", "num")
     t = Application.WorksheetFunction.Trim(t)
-
-    'Remove leading/trailing underscores
-    Do While Left$(t, 1) = "_": t = Mid$(t, 2): Loop
-    Do While Right$(t, 1) = "_": t = Left$(t, Len(t) - 1): Loop
-
     CleanAccessFieldName = t
+End Function
+
+Private Function LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim c As Range
+    On Error Resume Next
+    Set c = ws.Cells.Find(What:="*", LookIn:=xlFormulas, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    On Error GoTo 0
+    If c Is Nothing Then
+        LastUsedRow = 1
+    Else
+        LastUsedRow = c.Row
+    End If
 End Function
