@@ -2,8 +2,12 @@ Option Explicit
 
 ' ============================================================
 ' FULL REWRITE
-' Populate remediation tasks from Issue Report Listing2
-' with fuzzy dedupe against existing destination rows
+' Keeps original Issue ID behavior:
+'   - never uses Question ID as Issue ID
+'   - preserves existing Issue IDs
+'   - backfills Issue IDs from main rows to extra rows at end
+' Adds:
+'   - fuzzy matching ONLY against rows that existed before run
 ' ============================================================
 
 Public Sub Populate_RemediationTasks_From_IssueReportListing2_Rewritten()
@@ -24,9 +28,9 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2_Rewritten()
 
     On Error GoTo FailHard
 
-    ' ------------------------------------------------------------
+    ' -----------------------------
     ' Pick destination workbook
-    ' ------------------------------------------------------------
+    ' -----------------------------
     dstPath = Application.GetOpenFilename("Excel Files (*.xlsx;*.xlsm), *.xlsx;*.xlsm", , _
                                           "Select Remediation Task file")
     If dstPath = False Then GoTo CleanExit
@@ -39,9 +43,9 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2_Rewritten()
         GoTo CleanExit
     End If
 
-    ' ------------------------------------------------------------
+    ' -----------------------------
     ' Pick source workbook
-    ' ------------------------------------------------------------
+    ' -----------------------------
     srcPath = Application.GetOpenFilename("Excel Files (*.xlsx;*.xlsm), *.xlsx;*.xlsm", , _
                                           "Select Issue Report file")
     If srcPath = False Then GoTo CleanExit
@@ -57,16 +61,16 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2_Rewritten()
         GoTo CleanExit
     End If
 
-    ' ------------------------------------------------------------
+    ' -----------------------------
     ' Log sheet
-    ' ------------------------------------------------------------
+    ' -----------------------------
     Set wsLog = GetOrCreateLogSheet(wbD, "Run Log")
     InitLog wsLog
     LogEvent wsLog, "INFO", "", "", "", "Started run (source sheet: Issue Report Listing2)."
 
-    ' ------------------------------------------------------------
-    ' Destination headers
-    ' ------------------------------------------------------------
+    ' ============================================================
+    ' DEST HEADERS
+    ' ============================================================
     Dim hdrRowD As Long
     Dim colTaskName As Long, colIssueId As Long, colDesc As Long
     Dim colAssigned As Long, colDue As Long, colSuggested As Long
@@ -74,6 +78,7 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2_Rewritten()
     hdrRowD = FindHeaderRowContains(wsD, Array("Remediation Task Name", "Issue"), 200)
     If hdrRowD = 0 Then
         MsgBox "Could not find required headers in destination sheet.", vbCritical
+        LogEvent wsLog, "ERROR", "", "", "", "Missing destination headers."
         GoTo CleanExit
     End If
 
@@ -96,9 +101,14 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2_Rewritten()
     If colDue > 0 Then wsD.Columns(colDue).NumberFormat = "m/d/yyyy"
     If colSuggested > 0 Then wsD.Columns(colSuggested).NumberFormat = "@"
 
-    ' ------------------------------------------------------------
-    ' Source headers
-    ' ------------------------------------------------------------
+    ' Original last row matters.
+    ' Fuzzy reuse is only allowed against rows that existed before this run.
+    Dim originalLastRow As Long
+    originalLastRow = GetLastUsedRow(wsD)
+
+    ' ============================================================
+    ' SOURCE HEADERS
+    ' ============================================================
     Dim hdrRowS As Long
     Dim colPolSub As Long, colQID As Long, colOrigQ As Long
     Dim colSystems As Long, colPlan As Long, colOwner As Long, colDueSrc As Long
@@ -123,18 +133,25 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2_Rewritten()
         GoTo CleanExit
     End If
 
-    ' ------------------------------------------------------------
-    ' Build exact destination indexes
-    ' ------------------------------------------------------------
-    Dim existingMain As Object, existingIssue As Object
-    Set existingMain = CreateObject("Scripting.Dictionary")
-    Set existingIssue = CreateObject("Scripting.Dictionary")
+    ' ============================================================
+    ' BUILD INDEXES FROM EXISTING DEST ROWS ONLY
+    ' ============================================================
+    Dim globalPrefix As String
+    globalPrefix = GuessMostCommonPrefix(wsD, hdrRowD, colTaskName)
+    If Len(globalPrefix) = 0 Then globalPrefix = "Russia Sweep 2"
 
-    BuildDestIndexes wsD, hdrRowD, colTaskName, colDesc, existingMain, existingIssue
+    Dim oldMain As Object, oldIssue As Object
+    Dim runMain As Object, runIssue As Object
+    Set oldMain = CreateObject("Scripting.Dictionary")
+    Set oldIssue = CreateObject("Scripting.Dictionary")
+    Set runMain = CreateObject("Scripting.Dictionary")
+    Set runIssue = CreateObject("Scripting.Dictionary")
 
-    ' ------------------------------------------------------------
-    ' Process source
-    ' ------------------------------------------------------------
+    BuildOldDestIndexes wsD, hdrRowD, originalLastRow, colTaskName, colDesc, oldMain, oldIssue
+
+    ' ============================================================
+    ' PROCESS SOURCE ROWS
+    ' ============================================================
     Dim lastRowS As Long, r As Long
     lastRowS = wsS.Cells(wsS.Rows.Count, colSystems).End(xlUp).Row
     If lastRowS < hdrRowS + 1 Then
@@ -146,12 +163,13 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2_Rewritten()
     curQID = ""
     curQuestion = ""
 
-    Dim wrote As Long, scanned As Long, matchedExisting As Long
-    wrote = 0
+    Dim scanned As Long, addedRows As Long, reusedOldRows As Long
     scanned = 0
-    matchedExisting = 0
+    addedRows = 0
+    reusedOldRows = 0
 
-    Dim seenMainInRun As Object, snippetCounts As Object
+    Dim seenMainInRun As Object
+    Dim snippetCounts As Object
     Set seenMainInRun = CreateObject("Scripting.Dictionary")
     Set snippetCounts = CreateObject("Scripting.Dictionary")
 
@@ -160,7 +178,11 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2_Rewritten()
 
         Dim vPol As String, vQID As String, vQ As String
         vPol = Trim$(CStr(GetMergedValue(wsS.Cells(r, colPolSub))))
-        If colQID > 0 Then vQID = Trim$(CStr(GetMergedValue(wsS.Cells(r, colQID)))) Else vQID = ""
+        If colQID > 0 Then
+            vQID = Trim$(CStr(GetMergedValue(wsS.Cells(r, colQID))))
+        Else
+            vQID = ""
+        End If
         vQ = Trim$(CStr(GetMergedValue(wsS.Cells(r, colOrigQ))))
 
         If Len(vPol) > 0 Then curPolicy = CanonicalPolicySubDomain(vPol)
@@ -195,43 +217,33 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2_Rewritten()
             Dim entityDisplay As String, entityKey As String
             entityDisplay = Trim$(CStr(e))
             entityKey = NormalizeKey(entityDisplay)
-            If Len(entityKey) = 0 Then GoTo NextEntity
-
-            Dim taskName As String
-            taskName = BuildTaskName("Russia", curPolicy, entityDisplay)
+            If Len(entityKey) = 0 Then GoTo NextE
 
             Dim keyMain As String
-            keyMain = NormalizeKey(taskName)
+            keyMain = entityKey & "||" & NormalizeKey(curPolicy)
 
-            ' One main row per task/entity/policy in this run
+            Dim taskName As String
+            taskName = BuildTaskName(globalPrefix, curPolicy, entityDisplay)
+
             If Not seenMainInRun.Exists(keyMain) Then
                 seenMainInRun.Add keyMain, True
 
-                Dim matchRow As Long
-                matchRow = FindExistingFuzzyMatch( _
-                                wsD, hdrRowD + 1, GetLastUsedRow(wsD), _
-                                colTaskName, colDesc, colSuggested, _
-                                taskName, curQuestion, planText)
+                Dim didReuseMain As Boolean
+                didReuseMain = UpsertMainRow( _
+                                wsD, hdrRowD, originalLastRow, _
+                                colTaskName, colIssueId, colDesc, colSuggested, colAssigned, colDue, _
+                                oldMain, runMain, _
+                                taskName, keyMain, curQuestion, planText, ownerText, dueVal, wsLog)
 
-                If matchRow > 0 Then
-                    ReuseExistingRow wsD, matchRow, colIssueId, colSuggested, colAssigned, colDue, _
-                                     curQID, planText, ownerText, dueVal
-                    LogEvent wsLog, "INFO", taskName, entityDisplay, curPolicy, _
-                             "Matched existing row " & matchRow & " by fuzzy comparison."
-                    matchedExisting = matchedExisting + 1
+                If didReuseMain Then
+                    reusedOldRows = reusedOldRows + 1
                 Else
-                    AppendNewRow wsD, hdrRowD, colTaskName, colIssueId, colDesc, colSuggested, colAssigned, colDue, _
-                                 taskName, curQID, curQuestion, planText, ownerText, dueVal
-                    LogEvent wsLog, "INFO", taskName, entityDisplay, curPolicy, _
-                             "Added new main row."
-                    wrote = wrote + 1
+                    addedRows = addedRows + 1
                 End If
 
             Else
-                ' additional issue row for same task in current run
                 Dim snip As String, snipBaseKey As String, uniqSnip As String
-
-                snip = MakeMeaningfulSnippetPhrase(curQuestion, 3, 7)
+                snip = MakeMeaningfulSnippetPhrase(curQuestion, 3, 5)
                 If Len(snip) = 0 Then snip = "Extra"
 
                 snipBaseKey = keyMain & "||" & NormalizeKey(snip)
@@ -244,31 +256,24 @@ Public Sub Populate_RemediationTasks_From_IssueReportListing2_Rewritten()
                     uniqSnip = snip
                 End If
 
-                Dim extraDesc As String
-                extraDesc = uniqSnip
+                Dim issueKey As String
+                issueKey = keyMain & "||" & NormalizeKey(uniqSnip)
 
-                Dim extraMatch As Long
-                extraMatch = FindExistingFuzzyMatch( _
-                                wsD, hdrRowD + 1, GetLastUsedRow(wsD), _
-                                colTaskName, colDesc, colSuggested, _
-                                taskName, extraDesc, planText)
+                Dim didReuseIssue As Boolean
+                didReuseIssue = UpsertIssueRow( _
+                                wsD, hdrRowD, originalLastRow, _
+                                colTaskName, colIssueId, colDesc, colSuggested, colAssigned, colDue, _
+                                oldIssue, runIssue, _
+                                taskName, keyMain, issueKey, uniqSnip, planText, ownerText, dueVal, wsLog)
 
-                If extraMatch > 0 Then
-                    ReuseExistingRow wsD, extraMatch, colIssueId, colSuggested, colAssigned, colDue, _
-                                     curQID, planText, ownerText, dueVal
-                    LogEvent wsLog, "INFO", taskName, entityDisplay, curPolicy, _
-                             "Matched existing extra row " & extraMatch & " by fuzzy comparison."
-                    matchedExisting = matchedExisting + 1
+                If didReuseIssue Then
+                    reusedOldRows = reusedOldRows + 1
                 Else
-                    AppendNewRow wsD, hdrRowD, colTaskName, colIssueId, colDesc, colSuggested, colAssigned, colDue, _
-                                 taskName, curQID, extraDesc, planText, ownerText, dueVal
-                    LogEvent wsLog, "INFO", taskName, entityDisplay, curPolicy, _
-                             "Added new extra row."
-                    wrote = wrote + 1
+                    addedRows = addedRows + 1
                 End If
             End If
 
-NextEntity:
+NextE:
         Next e
 
 NextR:
@@ -277,15 +282,19 @@ NextR:
     Application.Calculation = xlCalculationAutomatic
     Application.Calculate
 
+    ' Preserve original behavior:
+    ' extra rows inherit Issue ID from main rows after writes are complete
     FillIssueIdsFromMainRows wsD, hdrRowD, colTaskName, colIssueId
 
     LogEvent wsLog, "INFO", "", "", "", _
-             "Run complete. Scanned=" & scanned & ", Added=" & wrote & ", Reused=" & matchedExisting
+             "Run complete. Scanned rows: " & scanned & _
+             "; New rows added: " & addedRows & _
+             "; Existing old rows reused: " & reusedOldRows
 
     MsgBox "Complete." & vbCrLf & _
            "Scanned rows: " & scanned & vbCrLf & _
-           "New rows added: " & wrote & vbCrLf & _
-           "Existing rows reused: " & matchedExisting, vbInformation
+           "New rows added: " & addedRows & vbCrLf & _
+           "Existing old rows reused: " & reusedOldRows, vbInformation
 
 CleanExit:
     On Error Resume Next
@@ -307,26 +316,152 @@ FailHard:
 End Sub
 
 ' ============================================================
-' CORE WRITE / REUSE
+' UPSERT MAIN / ISSUE ROWS
+' Returns True only when an OLD row was reused.
+' Returns False when a NEW row was added this run.
 ' ============================================================
 
-Private Sub AppendNewRow( _
+Private Function UpsertMainRow( _
+    ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal originalLastRow As Long, _
+    ByVal colTaskName As Long, ByVal colIssueId As Long, ByVal colDesc As Long, _
+    ByVal colSuggested As Long, ByVal colAssigned As Long, ByVal colDue As Long, _
+    ByRef oldMain As Object, ByRef runMain As Object, _
+    ByVal taskName As String, ByVal keyMain As String, _
+    ByVal descText As String, ByVal suggestedText As String, _
+    ByVal assignedText As String, ByVal dueVal As Variant, _
+    ByVal wsLog As Worksheet) As Boolean
+
+    Dim targetRow As Long
+    targetRow = 0
+
+    ' 1) exact OLD match by main key
+    If oldMain.Exists(keyMain) Then
+        targetRow = CLng(oldMain(keyMain))
+        ReuseExistingRow ws, targetRow, colSuggested, colAssigned, colDue, suggestedText, assignedText, dueVal
+        LogEvent wsLog, "INFO", taskName, "", "", "Reused existing main row " & targetRow & "."
+        UpsertMainRow = True
+        Exit Function
+    End If
+
+    ' 2) fuzzy OLD match by task name + description/suggested remediation
+    targetRow = FindExistingFuzzyMatch( _
+                    ws, hdrRow + 1, originalLastRow, _
+                    colTaskName, colDesc, colSuggested, _
+                    taskName, descText, suggestedText)
+
+    If targetRow > 0 Then
+        ReuseExistingRow ws, targetRow, colSuggested, colAssigned, colDue, suggestedText, assignedText, dueVal
+        oldMain(keyMain) = targetRow
+        LogEvent wsLog, "INFO", taskName, "", "", "Fuzzy matched existing main row " & targetRow & "."
+        UpsertMainRow = True
+        Exit Function
+    End If
+
+    ' 3) if already added during this run, just update blanks on that row
+    If runMain.Exists(keyMain) Then
+        targetRow = CLng(runMain(keyMain))
+        ReuseExistingRow ws, targetRow, colSuggested, colAssigned, colDue, suggestedText, assignedText, dueVal
+        UpsertMainRow = False
+        Exit Function
+    End If
+
+    ' 4) add new row
+    targetRow = AppendNewRow( _
+                    ws, hdrRow, _
+                    colTaskName, colIssueId, colDesc, colSuggested, colAssigned, colDue, _
+                    taskName, "", descText, suggestedText, assignedText, dueVal)
+
+    runMain.Add keyMain, targetRow
+    LogEvent wsLog, "INFO", taskName, "", "", "Added new main row " & targetRow & "."
+    UpsertMainRow = False
+
+End Function
+
+Private Function UpsertIssueRow( _
+    ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal originalLastRow As Long, _
+    ByVal colTaskName As Long, ByVal colIssueId As Long, ByVal colDesc As Long, _
+    ByVal colSuggested As Long, ByVal colAssigned As Long, ByVal colDue As Long, _
+    ByRef oldIssue As Object, ByRef runIssue As Object, _
+    ByVal taskName As String, ByVal keyMain As String, ByVal issueKey As String, _
+    ByVal descText As String, ByVal suggestedText As String, _
+    ByVal assignedText As String, ByVal dueVal As Variant, _
+    ByVal wsLog As Worksheet) As Boolean
+
+    Dim targetRow As Long
+    targetRow = 0
+
+    ' 1) exact OLD issue match
+    If oldIssue.Exists(issueKey) Then
+        targetRow = CLng(oldIssue(issueKey))
+        ReuseExistingRow ws, targetRow, colSuggested, colAssigned, colDue, suggestedText, assignedText, dueVal
+        LogEvent wsLog, "INFO", taskName, "", "", "Reused existing issue row " & targetRow & "."
+        UpsertIssueRow = True
+        Exit Function
+    End If
+
+    ' 2) fuzzy OLD issue match
+    targetRow = FindExistingFuzzyMatch( _
+                    ws, hdrRow + 1, originalLastRow, _
+                    colTaskName, colDesc, colSuggested, _
+                    taskName, descText, suggestedText)
+
+    If targetRow > 0 Then
+        ReuseExistingRow ws, targetRow, colSuggested, colAssigned, colDue, suggestedText, assignedText, dueVal
+        oldIssue(issueKey) = targetRow
+        LogEvent wsLog, "INFO", taskName, "", "", "Fuzzy matched existing issue row " & targetRow & "."
+        UpsertIssueRow = True
+        Exit Function
+    End If
+
+    ' 3) exact match created during this run
+    If runIssue.Exists(issueKey) Then
+        targetRow = CLng(runIssue(issueKey))
+        ReuseExistingRow ws, targetRow, colSuggested, colAssigned, colDue, suggestedText, assignedText, dueVal
+        UpsertIssueRow = False
+        Exit Function
+    End If
+
+    ' 4) add new issue row
+    targetRow = AppendNewRow( _
+                    ws, hdrRow, _
+                    colTaskName, colIssueId, colDesc, colSuggested, colAssigned, colDue, _
+                    taskName, "", descText, suggestedText, assignedText, dueVal)
+
+    runIssue.Add issueKey, targetRow
+    LogEvent wsLog, "INFO", taskName, "", "", "Added new issue row " & targetRow & "."
+    UpsertIssueRow = False
+
+End Function
+
+' ============================================================
+' APPEND / REUSE
+' ============================================================
+
+Private Function AppendNewRow( _
     ByVal ws As Worksheet, ByVal hdrRow As Long, _
     ByVal colTaskName As Long, ByVal colIssueId As Long, ByVal colDesc As Long, _
     ByVal colSuggested As Long, ByVal colAssigned As Long, ByVal colDue As Long, _
-    ByVal taskName As String, ByVal issueId As String, ByVal descText As String, _
-    ByVal suggestedText As String, ByVal assignedText As String, ByVal dueVal As Variant)
+    ByVal taskName As String, ByVal issueIdToUse As String, _
+    ByVal descText As String, ByVal suggestedText As String, _
+    ByVal assignedText As String, ByVal dueVal As Variant) As Long
 
     Dim newRow As Long
     newRow = GetLastUsedRow(ws) + 1
     If newRow <= hdrRow Then newRow = hdrRow + 1
 
     ws.Cells(newRow, colTaskName).Value = taskName
-    ws.Cells(newRow, colIssueId).Value = issueId
+
+    ' DO NOT write Question ID here.
+    ' Write only an actual existing Issue ID when you truly have one.
+    If colIssueId > 0 Then
+        ws.Cells(newRow, colIssueId).Value = issueIdToUse
+    End If
+
     ws.Cells(newRow, colDesc).Value = descText
 
     If colSuggested > 0 Then ws.Cells(newRow, colSuggested).Value = suggestedText
     If colAssigned > 0 Then ws.Cells(newRow, colAssigned).Value = assignedText
+
     If colDue > 0 Then
         If IsDate(dueVal) Then
             ws.Cells(newRow, colDue).Value = CDate(dueVal)
@@ -334,20 +469,16 @@ Private Sub AppendNewRow( _
             ws.Cells(newRow, colDue).Value = dueVal
         End If
     End If
-End Sub
+
+    AppendNewRow = newRow
+End Function
 
 Private Sub ReuseExistingRow( _
     ByVal ws As Worksheet, ByVal targetRow As Long, _
-    ByVal colIssueId As Long, ByVal colSuggested As Long, _
+    ByVal colSuggested As Long, _
     ByVal colAssigned As Long, ByVal colDue As Long, _
-    ByVal issueId As String, ByVal suggestedText As String, _
+    ByVal suggestedText As String, _
     ByVal assignedText As String, ByVal dueVal As Variant)
-
-    If colIssueId > 0 Then
-        If Len(Trim$(CStr(ws.Cells(targetRow, colIssueId).Value))) = 0 Then
-            ws.Cells(targetRow, colIssueId).Value = issueId
-        End If
-    End If
 
     If colSuggested > 0 Then
         If Len(Trim$(CStr(ws.Cells(targetRow, colSuggested).Value))) = 0 Then
@@ -373,7 +504,48 @@ Private Sub ReuseExistingRow( _
 End Sub
 
 ' ============================================================
-' FUZZY MATCHING
+' OLD DEST INDEXES
+' ============================================================
+
+Private Sub BuildOldDestIndexes( _
+    ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal lastRowToIndex As Long, _
+    ByVal colTaskName As Long, ByVal colDesc As Long, _
+    ByRef oldMain As Object, ByRef oldIssue As Object)
+
+    Dim r As Long
+    For r = hdrRow + 1 To lastRowToIndex
+        Dim taskText As String, descText As String
+        Dim taskKey As String, issueKey As String, mainKey As String
+        Dim entityText As String, policyText As String
+
+        taskText = Trim$(CStr(ws.Cells(r, colTaskName).Value))
+        descText = Trim$(CStr(ws.Cells(r, colDesc).Value))
+
+        If Len(taskText) = 0 Then GoTo ContinueR
+
+        taskKey = NormalizeKey(taskText)
+
+        ' Main index uses entity + policy from task name
+        entityText = ExtractTextInsideLastParen(taskText)
+        policyText = ExtractPolicyBetweenPrefixAndLastParen(taskText)
+
+        If Len(entityText) > 0 And Len(policyText) > 0 Then
+            mainKey = NormalizeKey(entityText) & "||" & NormalizeKey(policyText)
+            If Not oldMain.Exists(mainKey) Then oldMain.Add mainKey, r
+        End If
+
+        If Len(entityText) > 0 And Len(policyText) > 0 And Len(descText) > 0 Then
+            issueKey = NormalizeKey(entityText) & "||" & NormalizeKey(policyText) & "||" & NormalizeKey(descText)
+            If Not oldIssue.Exists(issueKey) Then oldIssue.Add issueKey, r
+        End If
+
+ContinueR:
+    Next r
+End Sub
+
+' ============================================================
+' FUZZY MATCH
+' Only searches rows that existed before the run
 ' ============================================================
 
 Private Function FindExistingFuzzyMatch( _
@@ -512,51 +684,31 @@ Private Function NormalizeForMatch(ByVal s As String) As String
 End Function
 
 ' ============================================================
-' DEST INDEXES
-' ============================================================
-
-Private Sub BuildDestIndexes( _
-    ByVal ws As Worksheet, ByVal hdrRow As Long, _
-    ByVal colTaskName As Long, ByVal colDesc As Long, _
-    ByRef existingMain As Object, ByRef existingIssue As Object)
-
-    Dim lastRow As Long, r As Long
-    lastRow = GetLastUsedRow(ws)
-
-    For r = hdrRow + 1 To lastRow
-        Dim taskKey As String, descKey As String, rowKey As String
-        taskKey = NormalizeKey(CStr(ws.Cells(r, colTaskName).Value))
-        descKey = NormalizeKey(CStr(ws.Cells(r, colDesc).Value))
-
-        If Len(taskKey) > 0 Then
-            If Not existingMain.Exists(taskKey) Then existingMain.Add taskKey, r
-        End If
-
-        If Len(taskKey) > 0 And Len(descKey) > 0 Then
-            rowKey = taskKey & "||" & descKey
-            If Not existingIssue.Exists(rowKey) Then existingIssue.Add rowKey, r
-        End If
-    Next r
-End Sub
-
-' ============================================================
-' HEADER FINDERS
+' HEADER HELPERS
 ' ============================================================
 
 Private Function FindSheetByHeaderLoose(ByVal wb As Workbook, ByVal headerText As String, ByVal searchRows As Long) As Worksheet
     Dim ws As Worksheet
+    Dim hdrRow As Long
+
     For Each ws In wb.Worksheets
-        If FindHeaderColumnContains(ws, FindHeaderRowContains(ws, Array(headerText), searchRows), headerText) > 0 Then
-            Set FindSheetByHeaderLoose = ws
-            Exit Function
+        hdrRow = FindHeaderRowContains(ws, Array(headerText), searchRows)
+        If hdrRow > 0 Then
+            If FindHeaderColumnContains(ws, hdrRow, headerText) > 0 Then
+                Set FindSheetByHeaderLoose = ws
+                Exit Function
+            End If
         End If
     Next ws
 End Function
 
 Private Function FindHeaderRowContains(ByVal ws As Worksheet, ByVal headerTexts As Variant, ByVal maxRows As Long) As Long
     Dim r As Long, i As Long, ok As Boolean
+    Dim lastCheckRow As Long
 
-    For r = 1 To Application.Min(maxRows, ws.UsedRange.Row + ws.UsedRange.Rows.Count + 50)
+    lastCheckRow = Application.Min(maxRows, ws.UsedRange.Row + ws.UsedRange.Rows.Count + 50)
+
+    For r = 1 To lastCheckRow
         ok = True
         For i = LBound(headerTexts) To UBound(headerTexts)
             If FindHeaderColumnContains(ws, r, CStr(headerTexts(i))) = 0 Then
@@ -579,6 +731,8 @@ Private Function FindHeaderColumnContains(ByVal ws As Worksheet, ByVal headerRow
     lastCol = ws.Cells(headerRow, ws.Columns.Count).End(xlToLeft).Column
     For c = 1 To lastCol
         v = LCase$(Trim$(CStr(ws.Cells(headerRow, c).Value)))
+        v = Replace(v, vbCr, " ")
+        v = Replace(v, vbLf, " ")
         If InStr(1, v, LCase$(findText), vbTextCompare) > 0 Then
             FindHeaderColumnContains = c
             Exit Function
@@ -625,8 +779,92 @@ Private Function FindColByKeywords(ByVal ws As Worksheet, ByVal headerRow As Lon
 End Function
 
 ' ============================================================
-' ENTITY PARSING / TASK NAME
+' TASK NAME / ENTITY / TEXT HELPERS
 ' ============================================================
+
+Private Function BuildTaskName(ByVal globalPrefix As String, ByVal issueName As String, ByVal entityName As String) As String
+    Dim t As String
+    t = Trim$(globalPrefix)
+    If Len(Trim$(issueName)) > 0 Then
+        t = t & " - " & Trim$(issueName)
+    End If
+    If Len(Trim$(entityName)) > 0 Then
+        t = t & " (" & Trim$(entityName) & ")"
+    End If
+    BuildTaskName = t
+End Function
+
+Private Function GuessMostCommonPrefix(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal colTaskName As Long) As String
+    Dim lastRow As Long, r As Long
+    Dim d As Object
+    Dim taskText As String, prefixText As String
+    Dim bestKey As String, bestCount As Long
+
+    Set d = CreateObject("Scripting.Dictionary")
+    lastRow = GetLastUsedRow(ws)
+
+    For r = hdrRow + 1 To lastRow
+        taskText = Trim$(CStr(ws.Cells(r, colTaskName).Value))
+        If Len(taskText) = 0 Then GoTo ContinueR
+
+        prefixText = ExtractPrefixBeforeDash(taskText)
+        If Len(prefixText) > 0 Then
+            If d.Exists(prefixText) Then
+                d(prefixText) = CLng(d(prefixText)) + 1
+            Else
+                d.Add prefixText, 1
+            End If
+        End If
+
+ContinueR:
+    Next r
+
+    bestKey = ""
+    bestCount = 0
+
+    Dim k As Variant
+    For Each k In d.Keys
+        If CLng(d(k)) > bestCount Then
+            bestCount = CLng(d(k))
+            bestKey = CStr(k)
+        End If
+    Next k
+
+    GuessMostCommonPrefix = bestKey
+End Function
+
+Private Function ExtractPrefixBeforeDash(ByVal taskText As String) As String
+    Dim p As Long
+    p = InStr(1, taskText, " - ", vbTextCompare)
+    If p > 0 Then
+        ExtractPrefixBeforeDash = Trim$(Left$(taskText, p - 1))
+    Else
+        ExtractPrefixBeforeDash = ""
+    End If
+End Function
+
+Private Function ExtractTextInsideLastParen(ByVal s As String) As String
+    Dim p1 As Long, p2 As Long
+    p2 = InStrRev(s, ")")
+    p1 = InStrRev(s, "(")
+    If p1 > 0 And p2 > p1 Then
+        ExtractTextInsideLastParen = Trim$(Mid$(s, p1 + 1, p2 - p1 - 1))
+    Else
+        ExtractTextInsideLastParen = ""
+    End If
+End Function
+
+Private Function ExtractPolicyBetweenPrefixAndLastParen(ByVal taskText As String) As String
+    Dim pDash As Long, pOpen As Long
+    pDash = InStr(1, taskText, " - ", vbTextCompare)
+    pOpen = InStrRev(taskText, "(")
+
+    If pDash > 0 And pOpen > pDash Then
+        ExtractPolicyBetweenPrefixAndLastParen = Trim$(Mid$(taskText, pDash + 3, pOpen - (pDash + 3)))
+    Else
+        ExtractPolicyBetweenPrefixAndLastParen = ""
+    End If
+End Function
 
 Private Function ParseEntities(ByVal systemsRaw As String) As Collection
     Dim col As New Collection
@@ -666,14 +904,6 @@ Private Function CleanEntityName(ByVal s As String) As String
     CleanEntityName = t
 End Function
 
-Private Function BuildTaskName(ByVal divisionCountry As String, ByVal issueName As String, ByVal entityName As String) As String
-    Dim t As String
-    t = Trim$(divisionCountry) & " Sweep 2"
-    If Len(Trim$(issueName)) > 0 Then t = t & " - " & Trim$(issueName)
-    If Len(Trim$(entityName)) > 0 Then t = t & " (" & Trim$(entityName) & ")"
-    BuildTaskName = t
-End Function
-
 Private Function CanonicalPolicySubDomain(ByVal s As String) As String
     Dim t As String
     t = Trim$(s)
@@ -691,10 +921,6 @@ Private Function CanonicalPolicySubDomain(ByVal s As String) As String
 
     CanonicalPolicySubDomain = t
 End Function
-
-' ============================================================
-' SNIPPETS
-' ============================================================
 
 Private Function MakeMeaningfulSnippetPhrase(ByVal s As String, ByVal minWords As Long, ByVal maxWords As Long) As String
     Dim cleaned As String, arr As Variant
@@ -727,34 +953,10 @@ Private Function NormalizeSentence(ByVal s As String) As String
     t = Replace(t, vbLf, " ")
     t = Replace(t, "?", "")
     t = Replace(t, ".", "")
-    t = Replace(t, "  ", " ")
+    Do While InStr(t, "  ") > 0
+        t = Replace(t, "  ", " ")
+    Loop
     NormalizeSentence = Trim$(t)
-End Function
-
-' ============================================================
-' VALUE HELPERS
-' ============================================================
-
-Private Function GetMergedValue(ByVal cell As Range) As Variant
-    If cell.MergeCells Then
-        GetMergedValue = cell.MergeArea.Cells(1, 1).Value
-    Else
-        GetMergedValue = cell.Value
-    End If
-End Function
-
-Private Function GetLastUsedRow(ByVal ws As Worksheet) As Long
-    Dim lastCell As Range
-    On Error Resume Next
-    Set lastCell = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
-                                 LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
-    On Error GoTo 0
-
-    If lastCell Is Nothing Then
-        GetLastUsedRow = 1
-    Else
-        GetLastUsedRow = lastCell.Row
-    End If
 End Function
 
 Private Function NormalizeKey(ByVal s As String) As String
@@ -783,8 +985,32 @@ Private Function NormalizeKey(ByVal s As String) As String
     NormalizeKey = Trim$(t)
 End Function
 
+Private Function GetMergedValue(ByVal cell As Range) As Variant
+    If cell.MergeCells Then
+        GetMergedValue = cell.MergeArea.Cells(1, 1).Value
+    Else
+        GetMergedValue = cell.Value
+    End If
+End Function
+
+Private Function GetLastUsedRow(ByVal ws As Worksheet) As Long
+    Dim lastCell As Range
+    On Error Resume Next
+    Set lastCell = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+                                 LookAt:=xlPart, SearchOrder:=xlByRows, SearchDirection:=xlPrevious)
+    On Error GoTo 0
+
+    If lastCell Is Nothing Then
+        GetLastUsedRow = 1
+    Else
+        GetLastUsedRow = lastCell.Row
+    End If
+End Function
+
 ' ============================================================
-' FILL EXTRA ISSUE IDS FROM MAIN ROWS
+' ISSUE ID BACKFILL
+' Preserves original idea:
+' extra rows inherit Issue ID from task's main row
 ' ============================================================
 
 Private Sub FillIssueIdsFromMainRows(ByVal ws As Worksheet, ByVal hdrRow As Long, ByVal colTaskName As Long, ByVal colIssueId As Long)
@@ -794,6 +1020,7 @@ Private Sub FillIssueIdsFromMainRows(ByVal ws As Worksheet, ByVal hdrRow As Long
 
     lastRow = GetLastUsedRow(ws)
 
+    ' First pass: remember first nonblank Issue ID for each task name
     For r = hdrRow + 1 To lastRow
         Dim taskKey As String, issueVal As String
         taskKey = NormalizeKey(CStr(ws.Cells(r, colTaskName).Value))
@@ -804,6 +1031,7 @@ Private Sub FillIssueIdsFromMainRows(ByVal ws As Worksheet, ByVal hdrRow As Long
         End If
     Next r
 
+    ' Second pass: fill blanks from remembered task Issue ID
     For r = hdrRow + 1 To lastRow
         taskKey = NormalizeKey(CStr(ws.Cells(r, colTaskName).Value))
         issueVal = Trim$(CStr(ws.Cells(r, colIssueId).Value))
