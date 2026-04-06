@@ -1,0 +1,706 @@
+Option Explicit
+
+' ============================================================
+' Monthly Termination Automation - Full Version with Summary
+' ============================================================
+
+Public Sub RunMonthlyTerminationAutomation()
+
+    Dim sourceFolder As String
+    Dim rootFolder As String
+    Dim summaryPath As String
+    Dim monthLabel As String
+    
+    Dim termFile As String
+    Dim authFile As String
+    Dim merlinFile As String
+    
+    Dim monthFolder As String
+    Dim authFolder As String
+    Dim merlinFolder As String
+    
+    Dim authWbPath As String
+    Dim merlinWbPath As String
+    
+    On Error GoTo ErrHandler
+    
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+    Application.EnableEvents = False
+    Application.AskToUpdateLinks = False
+    
+    sourceFolder = PickFolder("Select the folder containing the 3 monthly source files")
+    If Len(sourceFolder) = 0 Then GoTo SafeExit
+    
+    rootFolder = PickFolder("Select the local SharePoint synced root folder")
+    If Len(rootFolder) = 0 Then GoTo SafeExit
+    
+    summaryPath = PickFile("Select the Termination Testing Summary workbook", "*.xls*")
+    If Len(summaryPath) = 0 Then GoTo SafeExit
+    
+    monthLabel = InputBox("Enter the month label." & vbCrLf & _
+                          "Example: March or March 2026", _
+                          "Month Label", Format(Date, "mmmm yyyy"))
+    monthLabel = CleanFileName(Trim(monthLabel))
+    
+    If Len(monthLabel) = 0 Then
+        MsgBox "No valid month label entered. Process cancelled.", vbExclamation
+        GoTo SafeExit
+    End If
+    
+    termFile = FindFirstMatchingFile(sourceFolder, "Termination Movement report", "cdt")
+    authFile = FindFirstMatchingFile(sourceFolder, "ADComplianceExport-auth_products", "")
+    merlinFile = FindFirstMatchingFile(sourceFolder, "ADComplianceExport-ad_merlin_net", "")
+    
+    If Len(termFile) = 0 Then Err.Raise vbObjectError + 2000, , _
+        "Could not find the Termination Movement report file in:" & vbCrLf & sourceFolder
+        
+    If Len(authFile) = 0 Then Err.Raise vbObjectError + 2001, , _
+        "Could not find the auth_products export file in:" & vbCrLf & sourceFolder
+        
+    If Len(merlinFile) = 0 Then Err.Raise vbObjectError + 2002, , _
+        "Could not find the ad_merlin_net export file in:" & vbCrLf & sourceFolder
+    
+    monthFolder = AppendPath(rootFolder, monthLabel)
+    authFolder = AppendPath(monthFolder, "auth.prod")
+    merlinFolder = AppendPath(monthFolder, "ad.Merlin")
+    
+    EnsureFolder monthFolder
+    EnsureFolder authFolder
+    EnsureFolder merlinFolder
+    
+    SafeFileCopy termFile, AppendPath(monthFolder, GetFileNameFromPath(termFile))
+    SafeFileCopy authFile, AppendPath(authFolder, GetFileNameFromPath(authFile))
+    SafeFileCopy merlinFile, AppendPath(merlinFolder, GetFileNameFromPath(merlinFile))
+    
+    authWbPath = AppendPath(authFolder, "auth.prod " & monthLabel & " termination worksheet.xlsx")
+    merlinWbPath = AppendPath(merlinFolder, "ad.Merlin " & monthLabel & " termination worksheet.xlsx")
+    
+    CreateTwoSheetWorkbook authWbPath
+    CreateTwoSheetWorkbook merlinWbPath
+    
+    ProcessTerminationWorkbook authWbPath, termFile, authFile, "auth.prod"
+    ProcessTerminationWorkbook merlinWbPath, termFile, merlinFile, "ad.Merlin"
+    
+    UpdateSummaryWorkbook summaryPath, monthLabel, merlinWbPath, authWbPath
+    
+    MsgBox "Process completed successfully." & vbCrLf & vbCrLf & _
+           "Created and updated:" & vbCrLf & _
+           authWbPath & vbCrLf & _
+           merlinWbPath & vbCrLf & _
+           summaryPath, vbInformation
+    
+SafeExit:
+    On Error Resume Next
+    Application.ScreenUpdating = True
+    Application.DisplayAlerts = True
+    Application.EnableEvents = True
+    Application.AskToUpdateLinks = True
+    Exit Sub
+
+ErrHandler:
+    MsgBox "Error: " & Err.Description, vbCritical, "Monthly Termination Automation"
+    Resume SafeExit
+
+End Sub
+
+Private Sub ProcessTerminationWorkbook(ByVal targetWbPath As String, _
+                                       ByVal terminationFile As String, _
+                                       ByVal exportFile As String, _
+                                       ByVal systemLabel As String)
+
+    Dim wbTarget As Workbook
+    Dim wbTerm As Workbook
+    Dim wbExport As Workbook
+    
+    Dim wsTarget1 As Worksheet
+    Dim wsTarget2 As Worksheet
+    Dim wsTerm As Worksheet
+    Dim wsExport As Worksheet
+    
+    On Error GoTo ErrHandler
+    
+    Set wbTarget = Workbooks.Open(targetWbPath)
+    Set wsTarget1 = wbTarget.Worksheets(1)
+    Set wsTarget2 = wbTarget.Worksheets(2)
+    
+    wsTarget1.Name = "Sheet1"
+    wsTarget2.Name = "Sheet2"
+    
+    Set wbTerm = Workbooks.Open(terminationFile, ReadOnly:=True)
+    Set wsTerm = wbTerm.Worksheets(1)
+    
+    Set wbExport = Workbooks.Open(exportFile, ReadOnly:=True)
+    Set wsExport = wbExport.Worksheets(1)
+    
+    CopyTerminationData wsTerm, wsTarget1
+    CopyExportData wsExport, wsTarget2
+    AddAndPopulateColumns wsTarget1, wsTarget2, systemLabel
+    
+    wbTarget.Save
+    
+CleanUp:
+    On Error Resume Next
+    If Not wbTerm Is Nothing Then wbTerm.Close SaveChanges:=False
+    If Not wbExport Is Nothing Then wbExport.Close SaveChanges:=False
+    If Not wbTarget Is Nothing Then wbTarget.Close SaveChanges:=True
+    Exit Sub
+
+ErrHandler:
+    Resume CleanUp
+
+End Sub
+
+Private Sub UpdateSummaryWorkbook(ByVal summaryPath As String, _
+                                  ByVal monthLabel As String, _
+                                  ByVal merlinWbPath As String, _
+                                  ByVal authWbPath As String)
+
+    Dim wbSummary As Workbook
+    Dim wbMerlin As Workbook
+    Dim wbAuth As Workbook
+    
+    On Error GoTo ErrHandler
+    
+    Set wbSummary = Workbooks.Open(summaryPath)
+    Set wbMerlin = Workbooks.Open(merlinWbPath, ReadOnly:=True)
+    Set wbAuth = Workbooks.Open(authWbPath, ReadOnly:=True)
+    
+    AppendSystemRowsToSummary wbMerlin.Worksheets("Sheet1"), wbSummary.Worksheets("merlin.net"), monthLabel, "MERLIN"
+    AppendSystemRowsToSummary wbAuth.Worksheets("Sheet1"), wbSummary.Worksheets("auth.prod"), monthLabel, "AUTH"
+    
+    wbSummary.Save
+    
+CleanUp:
+    On Error Resume Next
+    If Not wbMerlin Is Nothing Then wbMerlin.Close SaveChanges:=False
+    If Not wbAuth Is Nothing Then wbAuth.Close SaveChanges:=False
+    If Not wbSummary Is Nothing Then wbSummary.Close SaveChanges:=True
+    Exit Sub
+
+ErrHandler:
+    Resume CleanUp
+
+End Sub
+
+Private Sub AppendSystemRowsToSummary(ByVal wsSrc As Worksheet, _
+                                      ByVal wsDst As Worksheet, _
+                                      ByVal monthLabel As String, _
+                                      ByVal systemType As String)
+
+    Dim hdrRow As Long
+    Dim startRow As Long
+    Dim dataRow As Long
+    Dim lastSrcRow As Long
+    Dim outRow As Long
+    Dim seq As Long
+    
+    Dim colFullName As Long, colUPI As Long, col511 As Long, colEEGroup As Long
+    Dim colEndDateAction As Long, colLastDay As Long, colReason As Long
+    Dim colLocation As Long, colDivision As Long, colManager As Long
+    Dim colMatch As Long, colLastLogon As Long, colModified As Long
+    
+    colFullName = FindHeaderColumn(wsSrc, "Full name")
+    colUPI = FindHeaderColumn(wsSrc, "UPI Number")
+    col511 = FindHeaderColumn(wsSrc, "511")
+    colEEGroup = FindHeaderColumn(wsSrc, "EE Group")
+    colEndDateAction = FindHeaderColumn(wsSrc, "End Date - Action")
+    colLastDay = FindHeaderColumn(wsSrc, "Last Day of Work")
+    colReason = FindHeaderColumn(wsSrc, "Reason for Action")
+    colLocation = FindHeaderColumn(wsSrc, "Personnel Area Description")
+    colDivision = FindHeaderColumn(wsSrc, "Division")
+    colManager = FindHeaderColumn(wsSrc, "Direct Manager")
+    colMatch = FindHeaderColumn(wsSrc, "match in 511")
+    
+    If systemType = "MERLIN" Then
+        colLastLogon = FindHeaderColumn(wsSrc, "ad.Merlin Last log on")
+        colModified = FindHeaderColumn(wsSrc, "ad.Merlin modified date")
+    Else
+        colLastLogon = FindHeaderColumn(wsSrc, "auth.prod Last log on")
+        colModified = FindHeaderColumn(wsSrc, "auth.prod modified date")
+    End If
+    
+    If colFullName = 0 Then Err.Raise vbObjectError + 3000, , "Could not find 'Full name' in monthly worksheet."
+    If colUPI = 0 Then Err.Raise vbObjectError + 3001, , "Could not find 'UPI Number' in monthly worksheet."
+    If col511 = 0 Then Err.Raise vbObjectError + 3002, , "Could not find '511' in monthly worksheet."
+    If colEEGroup = 0 Then Err.Raise vbObjectError + 3003, , "Could not find 'EE Group' in monthly worksheet."
+    If colEndDateAction = 0 Then Err.Raise vbObjectError + 3004, , "Could not find 'End Date - Action' in monthly worksheet."
+    If colLastDay = 0 Then Err.Raise vbObjectError + 3005, , "Could not find 'Last Day of Work' in monthly worksheet."
+    If colReason = 0 Then Err.Raise vbObjectError + 3006, , "Could not find 'Reason for Action' in monthly worksheet."
+    If colLocation = 0 Then Err.Raise vbObjectError + 3007, , "Could not find 'Personnel Area Description' in monthly worksheet."
+    If colDivision = 0 Then Err.Raise vbObjectError + 3008, , "Could not find 'Division' in monthly worksheet."
+    If colManager = 0 Then Err.Raise vbObjectError + 3009, , "Could not find 'Direct Manager' in monthly worksheet."
+    If colMatch = 0 Then Err.Raise vbObjectError + 3010, , "Could not find 'match in 511' in monthly worksheet."
+    If colLastLogon = 0 Then Err.Raise vbObjectError + 3011, , "Could not find the system last-logon column in monthly worksheet."
+    If colModified = 0 Then Err.Raise vbObjectError + 3012, , "Could not find the system modified-date column in monthly worksheet."
+    
+    hdrRow = AddMonthSection(wsDst, monthLabel, systemType)
+    startRow = hdrRow + 2
+    outRow = startRow
+    seq = 1
+    
+    lastSrcRow = LastUsedRow(wsSrc)
+    
+    For dataRow = 2 To lastSrcRow
+        If Trim$(LCase$(CStr(wsSrc.Cells(dataRow, colMatch).Value))) = "match" Then
+            
+            ' Existing workbook uses data beginning in column C
+            wsDst.Cells(outRow, 3).Value = seq                  ' C = #
+            wsDst.Cells(outRow, 4).Value = wsSrc.Cells(dataRow, colFullName).Value   ' D = First Name / Full Name
+            wsDst.Cells(outRow, 5).Value = wsSrc.Cells(dataRow, colUPI).Value        ' E = UPI
+            wsDst.Cells(outRow, 6).Value = wsSrc.Cells(dataRow, col511).Value        ' F = 511
+            wsDst.Cells(outRow, 7).Value = wsSrc.Cells(dataRow, colEEGroup).Value    ' G = Employee/Contractor
+            wsDst.Cells(outRow, 8).Value = wsSrc.Cells(dataRow, colEndDateAction).Value ' H
+            wsDst.Cells(outRow, 9).Value = wsSrc.Cells(dataRow, colLastDay).Value       ' I
+            wsDst.Cells(outRow, 10).Value = wsSrc.Cells(dataRow, colModified).Value     ' J
+            wsDst.Cells(outRow, 11).Value = wsSrc.Cells(dataRow, colLastLogon).Value    ' K
+            
+            ' L:O left untouched intentionally, because your workbook uses these for other testing fields
+            
+            If systemType = "MERLIN" Then
+                wsDst.Cells(outRow, 19).Value = wsSrc.Cells(dataRow, colReason).Value    ' S
+                wsDst.Cells(outRow, 20).Value = wsSrc.Cells(dataRow, colLocation).Value  ' T
+                wsDst.Cells(outRow, 21).Value = wsSrc.Cells(dataRow, colDivision).Value  ' U
+                wsDst.Cells(outRow, 22).Value = wsSrc.Cells(dataRow, colManager).Value   ' V
+            Else
+                wsDst.Cells(outRow, 19).Value = wsSrc.Cells(dataRow, colLocation).Value  ' S
+                wsDst.Cells(outRow, 20).Value = wsSrc.Cells(dataRow, colDivision).Value  ' T
+                wsDst.Cells(outRow, 21).Value = wsSrc.Cells(dataRow, colManager).Value   ' U
+                wsDst.Cells(outRow, 22).Value = wsSrc.Cells(dataRow, colReason).Value    ' V
+            End If
+            
+            outRow = outRow + 1
+            seq = seq + 1
+        End If
+    Next dataRow
+    
+    ' basic formatting on the new section
+    If outRow > startRow Then
+        wsDst.Range(wsDst.Cells(startRow, 3), wsDst.Cells(outRow - 1, 22)).Borders.LineStyle = xlContinuous
+    End If
+
+End Sub
+
+Private Function AddMonthSection(ByVal ws As Worksheet, ByVal monthLabel As String, ByVal systemType As String) As Long
+
+    Dim lastRow As Long
+    Dim monthRow As Long
+    Dim headerRow As Long
+    
+    lastRow = LastUsedRow(ws)
+    
+    If lastRow < 5 Then
+        monthRow = 3
+    Else
+        monthRow = lastRow + 2
+    End If
+    
+    headerRow = monthRow + 1
+    
+    ws.Cells(monthRow, 3).Value = UCase$(monthLabel)
+    ws.Cells(monthRow, 3).Font.Bold = True
+    
+    ws.Cells(headerRow, 3).Value = "#"
+    ws.Cells(headerRow, 4).Value = "First Name"
+    ws.Cells(headerRow, 5).Value = "UPI"
+    ws.Cells(headerRow, 6).Value = "511"
+    ws.Cells(headerRow, 7).Value = "Employee/Contractor"
+    
+    If systemType = "MERLIN" Then
+        ws.Cells(headerRow, 8).Value = "Term Date Entered by Manager/Contracting Agency (End Date - Action)"
+        ws.Cells(headerRow, 9).Value = "Last Day of Work"
+        ws.Cells(headerRow, 10).Value = "ad.merlin.net AD Deprovisioning Date"
+        ws.Cells(headerRow, 11).Value = "Last Logon Date"
+        ws.Cells(headerRow, 15).Value = "A"
+        ws.Cells(headerRow, 16).Value = "B"
+        ws.Cells(headerRow, 17).Value = "C"
+        ws.Cells(headerRow, 18).Value = "D"
+        ws.Cells(headerRow, 19).Value = "Reason for Termination"
+        ws.Cells(headerRow, 20).Value = "Location"
+        ws.Cells(headerRow, 21).Value = "Division"
+        ws.Cells(headerRow, 22).Value = "Manager"
+    Else
+        ws.Cells(headerRow, 8).Value = "Term Date Entered by Manager/Contracting Agency (End Date - Action)"
+        ws.Cells(headerRow, 9).Value = "Last Day of Work"
+        ws.Cells(headerRow, 10).Value = "auth.products AD Deprovisioning date"
+        ws.Cells(headerRow, 11).Value = "Last Logon Date"
+        ws.Cells(headerRow, 15).Value = "A"
+        ws.Cells(headerRow, 16).Value = "B"
+        ws.Cells(headerRow, 17).Value = "C"
+        ws.Cells(headerRow, 18).Value = "D"
+        ws.Cells(headerRow, 19).Value = "Location"
+        ws.Cells(headerRow, 20).Value = "Division"
+        ws.Cells(headerRow, 21).Value = "Manager"
+        ws.Cells(headerRow, 22).Value = "Reason for Termination"
+    End If
+    
+    ws.Range(ws.Cells(headerRow, 3), ws.Cells(headerRow, 22)).Font.Bold = True
+    ws.Range(ws.Cells(headerRow, 3), ws.Cells(headerRow, 22)).WrapText = True
+    
+    AddMonthSection = monthRow
+
+End Function
+
+Private Sub CopyTerminationData(ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet)
+
+    Dim lastRow As Long
+    Dim lastCol As Long
+    
+    wsDst.Cells.Clear
+    
+    lastRow = LastUsedRow(wsSrc)
+    lastCol = LastUsedCol(wsSrc)
+    
+    If lastRow < 13 Then
+        Err.Raise vbObjectError + 2100, , "Termination file does not contain data from row 13 downward."
+    End If
+    
+    wsDst.Range("A1").Resize(lastRow - 12, lastCol).Value = _
+        wsSrc.Range(wsSrc.Cells(13, 1), wsSrc.Cells(lastRow, lastCol)).Value
+
+End Sub
+
+Private Sub CopyExportData(ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet)
+
+    Dim lastRow As Long
+    Dim lastCol As Long
+    
+    wsDst.Cells.Clear
+    
+    lastRow = LastUsedRow(wsSrc)
+    lastCol = LastUsedCol(wsSrc)
+    
+    wsDst.Range("A1").Resize(lastRow, lastCol).Value = _
+        wsSrc.Range(wsSrc.Cells(1, 1), wsSrc.Cells(lastRow, lastCol)).Value
+
+End Sub
+
+Private Sub AddAndPopulateColumns(ByVal ws1 As Worksheet, ByVal ws2 As Worksheet, ByVal systemLabel As String)
+
+    Dim col511 As Long
+    Dim samCol As Long
+    Dim enabledCol As Long
+    Dim logonCol As Long
+    Dim modifiedCol As Long
+    
+    Dim colFullName As Long
+    Dim colMatch As Long
+    Dim colStatus As Long
+    Dim colLastLogon As Long
+    Dim colModifiedOut As Long
+    
+    Dim lastRow1 As Long
+    Dim lastRow2 As Long
+    Dim r As Long
+    Dim key As String
+    Dim fullName As String
+    
+    Dim dict As Object
+    Set dict = CreateObject("Scripting.Dictionary")
+    dict.CompareMode = 1
+    
+    col511 = FindHeaderColumn(ws1, "511")
+    If col511 = 0 Then Err.Raise vbObjectError + 2200, , "Could not find header '511' in Sheet1."
+    
+    samCol = FindHeaderColumn(ws2, "SamAccountName")
+    enabledCol = FindHeaderColumn(ws2, "Enabled")
+    logonCol = FindHeaderColumn(ws2, "LastLogonDate")
+    modifiedCol = FindHeaderColumn(ws2, "Modified")
+    
+    If samCol = 0 Then Err.Raise vbObjectError + 2201, , "Could not find header 'SamAccountName' in Sheet2."
+    If enabledCol = 0 Then Err.Raise vbObjectError + 2202, , "Could not find header 'Enabled' in Sheet2."
+    If logonCol = 0 Then Err.Raise vbObjectError + 2203, , "Could not find header 'LastLogonDate' in Sheet2."
+    If modifiedCol = 0 Then Err.Raise vbObjectError + 2204, , "Could not find header 'Modified' in Sheet2."
+    
+    ws1.Columns(col511).Insert Shift:=xlToRight
+    colFullName = col511
+    ws1.Cells(1, colFullName).Value = "Full name"
+    
+    col511 = col511 + 1
+    
+    ws1.Columns(col511 + 1).Resize(, 4).Insert Shift:=xlToRight
+    
+    colMatch = col511 + 1
+    colStatus = col511 + 2
+    colLastLogon = col511 + 3
+    colModifiedOut = col511 + 4
+    
+    ws1.Cells(1, colMatch).Value = "match in 511"
+    ws1.Cells(1, colStatus).Value = systemLabel & " status"
+    ws1.Cells(1, colLastLogon).Value = systemLabel & " Last log on"
+    ws1.Cells(1, colModifiedOut).Value = systemLabel & " modified date"
+    
+    lastRow2 = LastUsedRow(ws2)
+    
+    For r = 2 To lastRow2
+        key = Trim(CStr(ws2.Cells(r, samCol).Value))
+        If Len(key) > 0 Then
+            If Not dict.Exists(key) Then
+                dict.Add key, r
+            End If
+        End If
+    Next r
+    
+    lastRow1 = LastUsedRow(ws1)
+    
+    For r = 2 To lastRow1
+        
+        fullName = WorksheetFunction.Trim( _
+                    CleanText(ws1.Cells(r, 2).Value) & " " & _
+                    CleanText(ws1.Cells(r, 3).Value) & " " & _
+                    CleanText(ws1.Cells(r, 4).Value))
+        ws1.Cells(r, colFullName).Value = fullName
+        
+        key = Trim(CStr(ws1.Cells(r, col511).Value))
+        
+        If Len(key) > 0 And dict.Exists(key) Then
+            ws1.Cells(r, colMatch).Value = "Match"
+            ws1.Cells(r, colStatus).Value = ws2.Cells(dict(key), enabledCol).Value
+            ws1.Cells(r, colLastLogon).Value = ws2.Cells(dict(key), logonCol).Value
+            ws1.Cells(r, colModifiedOut).Value = ws2.Cells(dict(key), modifiedCol).Value
+        Else
+            ws1.Cells(r, colMatch).Value = "No Match"
+        End If
+    Next r
+    
+    ws1.Rows(1).Font.Bold = True
+    ws2.Rows(1).Font.Bold = True
+    
+    ws1.Cells.EntireColumn.AutoFit
+    ws2.Cells.EntireColumn.AutoFit
+
+End Sub
+
+Private Sub CreateTwoSheetWorkbook(ByVal savePath As String)
+
+    Dim wb As Workbook
+    Dim folderPath As String
+    
+    folderPath = Left(savePath, InStrRev(savePath, "\") - 1)
+    
+    If Len(Dir(folderPath, vbDirectory)) = 0 Then
+        Err.Raise vbObjectError + 2300, , "Folder does not exist: " & folderPath
+    End If
+    
+    If IsWorkbookOpenByPath(savePath) Then
+        Err.Raise vbObjectError + 2301, , _
+            "The target workbook is already open. Please close it and run again:" & vbCrLf & savePath
+    End If
+    
+    If Len(Dir(savePath)) > 0 Then
+        Kill savePath
+    End If
+    
+    Set wb = Workbooks.Add(xlWBATWorksheet)
+    
+    Do While wb.Worksheets.Count < 2
+        wb.Worksheets.Add After:=wb.Worksheets(wb.Worksheets.Count)
+    Loop
+    
+    wb.Worksheets(1).Name = "Sheet1"
+    wb.Worksheets(2).Name = "Sheet2"
+    
+    wb.SaveAs Filename:=savePath, FileFormat:=51
+    wb.Close SaveChanges:=True
+
+End Sub
+
+Private Function PickFolder(ByVal promptText As String) As String
+
+    Dim fd As FileDialog
+    
+    Set fd = Application.FileDialog(msoFileDialogFolderPicker)
+    
+    With fd
+        .Title = promptText
+        .AllowMultiSelect = False
+        If .Show = -1 Then
+            PickFolder = .SelectedItems(1)
+        Else
+            PickFolder = ""
+        End If
+    End With
+
+End Function
+
+Private Function PickFile(ByVal promptText As String, ByVal fileFilter As String) As String
+
+    Dim fd As FileDialog
+    
+    Set fd = Application.FileDialog(msoFileDialogFilePicker)
+    
+    With fd
+        .Title = promptText
+        .AllowMultiSelect = False
+        .Filters.Clear
+        .Filters.Add "Excel Files", fileFilter
+        If .Show = -1 Then
+            PickFile = .SelectedItems(1)
+        Else
+            PickFile = ""
+        End If
+    End With
+
+End Function
+
+Private Function FindFirstMatchingFile(ByVal folderPath As String, _
+                                       ByVal mustContain1 As String, _
+                                       ByVal mustContain2 As String) As String
+
+    Dim f As String
+    Dim fullPath As String
+    
+    f = Dir(AppendPath(folderPath, "*.*"))
+    
+    Do While Len(f) > 0
+        If InStr(1, LCase$(f), LCase$(mustContain1), vbTextCompare) > 0 Then
+            If Len(mustContain2) = 0 Or InStr(1, LCase$(f), LCase$(mustContain2), vbTextCompare) > 0 Then
+                fullPath = AppendPath(folderPath, f)
+                FindFirstMatchingFile = fullPath
+                Exit Function
+            End If
+        End If
+        f = Dir
+    Loop
+    
+    FindFirstMatchingFile = ""
+
+End Function
+
+Private Sub SafeFileCopy(ByVal sourcePath As String, ByVal destPath As String)
+
+    If Len(Dir(sourcePath)) = 0 Then
+        Err.Raise vbObjectError + 2400, , "Source file not found: " & sourcePath
+    End If
+    
+    If Len(Dir(destPath)) > 0 Then
+        Kill destPath
+    End If
+    
+    FileCopy sourcePath, destPath
+
+End Sub
+
+Private Sub EnsureFolder(ByVal folderPath As String)
+
+    If Len(folderPath) = 0 Then Exit Sub
+    
+    If Len(Dir(folderPath, vbDirectory)) = 0 Then
+        MkDir folderPath
+    End If
+
+End Sub
+
+Private Function AppendPath(ByVal folderPath As String, ByVal itemName As String) As String
+
+    If Right$(folderPath, 1) = "\" Then
+        AppendPath = folderPath & itemName
+    Else
+        AppendPath = folderPath & "\" & itemName
+    End If
+
+End Function
+
+Private Function GetFileNameFromPath(ByVal fullPath As String) As String
+
+    GetFileNameFromPath = Mid$(fullPath, InStrRev(fullPath, "\") + 1)
+
+End Function
+
+Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal headerText As String) As Long
+
+    Dim lastCol As Long
+    Dim c As Long
+    Dim currentHeader As String
+    
+    lastCol = LastUsedCol(ws)
+    
+    For c = 1 To lastCol
+        currentHeader = Trim$(LCase$(CStr(ws.Cells(1, c).Value)))
+        If currentHeader = Trim$(LCase$(headerText)) Then
+            FindHeaderColumn = c
+            Exit Function
+        End If
+    Next c
+    
+    FindHeaderColumn = 0
+
+End Function
+
+Private Function LastUsedRow(ByVal ws As Worksheet) As Long
+
+    Dim rng As Range
+    
+    Set rng = ws.Cells.Find(What:="*", _
+                            After:=ws.Cells(1, 1), _
+                            LookIn:=xlFormulas, _
+                            LookAt:=xlPart, _
+                            SearchOrder:=xlByRows, _
+                            SearchDirection:=xlPrevious, _
+                            MatchCase:=False)
+    If rng Is Nothing Then
+        LastUsedRow = 1
+    Else
+        LastUsedRow = rng.Row
+    End If
+
+End Function
+
+Private Function LastUsedCol(ByVal ws As Worksheet) As Long
+
+    Dim rng As Range
+    
+    Set rng = ws.Cells.Find(What:="*", _
+                            After:=ws.Cells(1, 1), _
+                            LookIn:=xlFormulas, _
+                            LookAt:=xlPart, _
+                            SearchOrder:=xlByColumns, _
+                            SearchDirection:=xlPrevious, _
+                            MatchCase:=False)
+    If rng Is Nothing Then
+        LastUsedCol = 1
+    Else
+        LastUsedCol = rng.Column
+    End If
+
+End Function
+
+Private Function CleanText(ByVal v As Variant) As String
+
+    CleanText = Trim(Replace(CStr(v), Chr(160), " "))
+
+End Function
+
+Private Function CleanFileName(ByVal fileNameText As String) As String
+
+    Dim s As String
+    
+    s = Trim(fileNameText)
+    s = Replace(s, "/", "-")
+    s = Replace(s, "\", "-")
+    s = Replace(s, ":", "-")
+    s = Replace(s, "*", "")
+    s = Replace(s, "?", "")
+    s = Replace(s, """", "")
+    s = Replace(s, "<", "")
+    s = Replace(s, ">", "")
+    s = Replace(s, "|", "")
+    
+    CleanFileName = Trim(s)
+
+End Function
+
+Private Function IsWorkbookOpenByPath(ByVal fullPath As String) As Boolean
+
+    Dim wb As Workbook
+    
+    For Each wb In Application.Workbooks
+        If StrComp(wb.FullName, fullPath, vbTextCompare) = 0 Then
+            IsWorkbookOpenByPath = True
+            Exit Function
+        End If
+    Next wb
+    
+    IsWorkbookOpenByPath = False
+
+End Function
