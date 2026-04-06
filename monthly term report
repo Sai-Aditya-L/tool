@@ -1,0 +1,419 @@
+Option Explicit
+
+' =========================
+' Monthly Termination Automation
+' =========================
+'
+' What this macro does:
+' 1. Prompts you for:
+'    - Source folder containing the 3 monthly files
+'    - SharePoint sync/root folder where monthly folders should be created
+'    - Month label (example: March 2026)
+' 2. Finds these files by name pattern:
+'    - Termination Movement report*cdt*
+'    - ADComplianceExport-auth_products*
+'    - ADComplianceExport-ad_merlin_net*
+' 3. Creates:
+'    - <Root>\<Month>\
+'    - <Root>\<Month>\auth.prod\
+'    - <Root>\<Month>\ad.Merlin\
+' 4. Copies the source files into the right folders
+' 5. Creates:
+'    - auth.prod <Month> termination worksheet.xlsx
+'    - ad.Merlin <Month> termination worksheet.xlsx
+' 6. Populates:
+'    - Sheet1 = Termination Movement report data from row 13 downward
+'    - Sheet2 = ADComplianceExport data
+' 7. Adds columns around "511":
+'    - before 511: Full name
+'    - after 511: match in 511, <label> status, <label> Last log on, <label> modified date
+' 8. Matches Sheet1[511] to Sheet2[SamAccountName]
+' 9. Pulls back Sheet2[Enabled], [LastLogonDate], [Modified]
+'
+' Assumptions:
+' - Row 13 in the Termination Movement report is the header row to start copying from
+' - Export file headers include:
+'       SamAccountName
+'       Enabled
+'       LastLogonDate
+'       Modified
+' - In Sheet1, the header is exactly:
+'       511
+' - First name, last name, middle name are in columns B, C, D
+'
+' If your real headers vary slightly, I can adjust the macro quickly.
+
+Public Sub RunMonthlyTerminationAutomation()
+
+    Dim sourceFolder As String
+    Dim rootFolder As String
+    Dim monthLabel As String
+
+    Dim termFile As String
+    Dim authFile As String
+    Dim merlinFile As String
+
+    Dim monthFolder As String
+    Dim authFolder As String
+    Dim merlinFolder As String
+
+    Dim authWbPath As String
+    Dim merlinWbPath As String
+
+    sourceFolder = PickFolder("Select the folder containing the 3 source files")
+    If Len(sourceFolder) = 0 Then Exit Sub
+
+    rootFolder = PickFolder("Select the SharePoint-synced root folder where the monthly folder should be created")
+    If Len(rootFolder) = 0 Then Exit Sub
+
+    monthLabel = InputBox("Enter the month folder name you want to create." & vbCrLf & _
+                          "Example: March or March 2026", _
+                          "Month Folder", Format(Date, "mmmm yyyy"))
+    monthLabel = Trim(monthLabel)
+    If Len(monthLabel) = 0 Then
+        MsgBox "No month label entered. Macro cancelled.", vbExclamation
+        Exit Sub
+    End If
+
+    termFile = FindFirstMatchingFile(sourceFolder, "Termination Movement report", "cdt")
+    authFile = FindFirstMatchingFile(sourceFolder, "ADComplianceExport-auth_products", "")
+    merlinFile = FindFirstMatchingFile(sourceFolder, "ADComplianceExport-ad_merlin_net", "")
+
+    If Len(termFile) = 0 Then
+        MsgBox "Could not find the Termination Movement report file in:" & vbCrLf & sourceFolder, vbCritical
+        Exit Sub
+    End If
+
+    If Len(authFile) = 0 Then
+        MsgBox "Could not find the auth_products export file in:" & vbCrLf & sourceFolder, vbCritical
+        Exit Sub
+    End If
+
+    If Len(merlinFile) = 0 Then
+        MsgBox "Could not find the ad_merlin_net export file in:" & vbCrLf & sourceFolder, vbCritical
+        Exit Sub
+    End If
+
+    monthFolder = AppendPath(rootFolder, monthLabel)
+    authFolder = AppendPath(monthFolder, "auth.prod")
+    merlinFolder = AppendPath(monthFolder, "ad.Merlin")
+
+    EnsureFolder monthFolder
+    EnsureFolder authFolder
+    EnsureFolder merlinFolder
+
+    FileCopy termFile, AppendPath(monthFolder, GetFileNameFromPath(termFile))
+    FileCopy authFile, AppendPath(authFolder, GetFileNameFromPath(authFile))
+    FileCopy merlinFile, AppendPath(merlinFolder, GetFileNameFromPath(merlinFile))
+
+    authWbPath = AppendPath(authFolder, "auth.prod " & monthLabel & " termination worksheet.xlsx")
+    merlinWbPath = AppendPath(merlinFolder, "ad.Merlin " & monthLabel & " termination worksheet.xlsx")
+
+    CreateTwoSheetWorkbook authWbPath
+    CreateTwoSheetWorkbook merlinWbPath
+
+    ProcessTerminationWorkbook authWbPath, termFile, authFile, "auth.prod"
+    ProcessTerminationWorkbook merlinWbPath, termFile, merlinFile, "ad.Merlin"
+
+    MsgBox "Done." & vbCrLf & vbCrLf & _
+           "Created and processed:" & vbCrLf & _
+           authWbPath & vbCrLf & _
+           merlinWbPath, vbInformation
+
+End Sub
+
+Private Sub ProcessTerminationWorkbook(ByVal targetWbPath As String, _
+                                       ByVal terminationFile As String, _
+                                       ByVal exportFile As String, _
+                                       ByVal systemLabel As String)
+
+    Dim wbTarget As Workbook
+    Dim wbTerm As Workbook
+    Dim wbExport As Workbook
+
+    Dim wsTarget1 As Worksheet
+    Dim wsTarget2 As Worksheet
+    Dim wsTerm As Worksheet
+    Dim wsExport As Worksheet
+
+    Application.ScreenUpdating = False
+    Application.DisplayAlerts = False
+
+    Set wbTarget = Workbooks.Open(targetWbPath)
+    Set wsTarget1 = wbTarget.Worksheets(1)
+    Set wsTarget2 = wbTarget.Worksheets(2)
+    wsTarget1.Name = "Sheet1"
+    wsTarget2.Name = "Sheet2"
+
+    Set wbTerm = Workbooks.Open(terminationFile)
+    Set wsTerm = wbTerm.Worksheets(1)
+
+    Set wbExport = Workbooks.Open(exportFile)
+    Set wsExport = wbExport.Worksheets(1)
+
+    CopyTerminationData wsTerm, wsTarget1
+    CopyExportData wsExport, wsTarget2
+
+    AddAndPopulateColumns wsTarget1, wsTarget2, systemLabel
+
+    wbTarget.Save
+    wbTerm.Close SaveChanges:=False
+    wbExport.Close SaveChanges:=False
+    wbTarget.Close SaveChanges:=True
+
+    Application.DisplayAlerts = True
+    Application.ScreenUpdating = True
+
+End Sub
+
+Private Sub CopyTerminationData(ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet)
+    Dim lastRow As Long
+    Dim lastCol As Long
+
+    wsDst.Cells.Clear
+
+    lastRow = LastUsedRow(wsSrc)
+    lastCol = LastUsedCol(wsSrc)
+
+    If lastRow < 13 Then
+        Err.Raise vbObjectError + 1000, , "Termination file does not contain data from row 13 downward."
+    End If
+
+    wsSrc.Range(wsSrc.Cells(13, 1), wsSrc.Cells(lastRow, lastCol)).Copy
+    wsDst.Range("A1").PasteSpecial xlPasteValues
+    Application.CutCopyMode = False
+End Sub
+
+Private Sub CopyExportData(ByVal wsSrc As Worksheet, ByVal wsDst As Worksheet)
+    Dim lastRow As Long
+    Dim lastCol As Long
+
+    wsDst.Cells.Clear
+
+    lastRow = LastUsedRow(wsSrc)
+    lastCol = LastUsedCol(wsSrc)
+
+    wsSrc.Range(wsSrc.Cells(1, 1), wsSrc.Cells(lastRow, lastCol)).Copy
+    wsDst.Range("A1").PasteSpecial xlPasteValues
+    Application.CutCopyMode = False
+End Sub
+
+Private Sub AddAndPopulateColumns(ByVal ws1 As Worksheet, ByVal ws2 As Worksheet, ByVal systemLabel As String)
+
+    Dim col511 As Long
+    Dim samCol As Long
+    Dim enabledCol As Long
+    Dim logonCol As Long
+    Dim modifiedCol As Long
+
+    Dim colFullName As Long
+    Dim colMatch As Long
+    Dim colStatus As Long
+    Dim colLastLogon As Long
+    Dim colModifiedOut As Long
+
+    Dim lastRow1 As Long
+    Dim lastRow2 As Long
+    Dim r As Long
+
+    Dim key As String
+    Dim dict As Object
+    Dim fullName As String
+
+    Set dict = CreateObject("Scripting.Dictionary")
+    dict.CompareMode = 1 ' TextCompare
+
+    col511 = FindHeaderColumn(ws1, "511")
+    If col511 = 0 Then
+        Err.Raise vbObjectError + 1001, , "Could not find header '511' in Sheet1."
+    End If
+
+    samCol = FindHeaderColumn(ws2, "SamAccountName")
+    enabledCol = FindHeaderColumn(ws2, "Enabled")
+    logonCol = FindHeaderColumn(ws2, "LastLogonDate")
+    modifiedCol = FindHeaderColumn(ws2, "Modified")
+
+    If samCol = 0 Then Err.Raise vbObjectError + 1002, , "Could not find header 'SamAccountName' in Sheet2."
+    If enabledCol = 0 Then Err.Raise vbObjectError + 1003, , "Could not find header 'Enabled' in Sheet2."
+    If logonCol = 0 Then Err.Raise vbObjectError + 1004, , "Could not find header 'LastLogonDate' in Sheet2."
+    If modifiedCol = 0 Then Err.Raise vbObjectError + 1005, , "Could not find header 'Modified' in Sheet2."
+
+    ' Insert 1 column before 511
+    ws1.Columns(col511).Insert Shift:=xlToRight
+    colFullName = col511
+    ws1.Cells(1, colFullName).Value = "Full name"
+
+    ' 511 moved one column right
+    col511 = col511 + 1
+
+    ' Insert 4 columns after 511
+    ws1.Columns(col511 + 1).Resize(, 4).Insert Shift:=xlToRight
+
+    colMatch = col511 + 1
+    colStatus = col511 + 2
+    colLastLogon = col511 + 3
+    colModifiedOut = col511 + 4
+
+    ws1.Cells(1, colMatch).Value = "match in 511"
+    ws1.Cells(1, colStatus).Value = systemLabel & " status"
+    ws1.Cells(1, colLastLogon).Value = systemLabel & " Last log on"
+    ws1.Cells(1, colModifiedOut).Value = systemLabel & " modified date"
+
+    lastRow2 = LastUsedRow(ws2)
+
+    ' Build lookup dictionary from Sheet2 using SamAccountName as key.
+    ' Store row number as value.
+    For r = 2 To lastRow2
+        key = Trim(CStr(ws2.Cells(r, samCol).Value))
+        If Len(key) > 0 Then
+            If Not dict.Exists(key) Then
+                dict.Add key, r
+            End If
+        End If
+    Next r
+
+    lastRow1 = LastUsedRow(ws1)
+
+    For r = 2 To lastRow1
+
+        ' Full name = B, C, D = First, Last, Middle
+        fullName = CleanNamePart(ws1.Cells(r, 2).Value) & " " & _
+                   CleanNamePart(ws1.Cells(r, 3).Value) & " " & _
+                   CleanNamePart(ws1.Cells(r, 4).Value)
+        ws1.Cells(r, colFullName).Value = WorksheetFunction.Trim(fullName)
+
+        key = Trim(CStr(ws1.Cells(r, col511).Value))
+
+        If Len(key) > 0 And dict.Exists(key) Then
+            ws1.Cells(r, colMatch).Value = "Match"
+            ws1.Cells(r, colStatus).Value = ws2.Cells(dict(key), enabledCol).Value
+            ws1.Cells(r, colLastLogon).Value = ws2.Cells(dict(key), logonCol).Value
+            ws1.Cells(r, colModifiedOut).Value = ws2.Cells(dict(key), modifiedCol).Value
+        Else
+            ws1.Cells(r, colMatch).Value = "No Match"
+        End If
+
+    Next r
+
+    ws1.Rows(1).Font.Bold = True
+    ws2.Rows(1).Font.Bold = True
+
+    ws1.Cells.EntireColumn.AutoFit
+    ws2.Cells.EntireColumn.AutoFit
+
+End Sub
+
+Private Function FindHeaderColumn(ByVal ws As Worksheet, ByVal headerText As String) As Long
+    Dim lastCol As Long
+    Dim c As Long
+
+    lastCol = LastUsedCol(ws)
+
+    For c = 1 To lastCol
+        If Trim$(LCase$(CStr(ws.Cells(1, c).Value))) = Trim$(LCase$(headerText)) Then
+            FindHeaderColumn = c
+            Exit Function
+        End If
+    Next c
+
+    FindHeaderColumn = 0
+End Function
+
+Private Function LastUsedRow(ByVal ws As Worksheet) As Long
+    Dim rng As Range
+    Set rng = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+                            LookAt:=xlPart, SearchOrder:=xlByRows, _
+                            SearchDirection:=xlPrevious, MatchCase:=False)
+    If rng Is Nothing Then
+        LastUsedRow = 1
+    Else
+        LastUsedRow = rng.Row
+    End If
+End Function
+
+Private Function LastUsedCol(ByVal ws As Worksheet) As Long
+    Dim rng As Range
+    Set rng = ws.Cells.Find(What:="*", After:=ws.Cells(1, 1), LookIn:=xlFormulas, _
+                            LookAt:=xlPart, SearchOrder:=xlByColumns, _
+                            SearchDirection:=xlPrevious, MatchCase:=False)
+    If rng Is Nothing Then
+        LastUsedCol = 1
+    Else
+        LastUsedCol = rng.Column
+    End If
+End Function
+
+Private Function FindFirstMatchingFile(ByVal folderPath As String, _
+                                       ByVal mustContain1 As String, _
+                                       ByVal mustContain2 As String) As String
+    Dim f As String
+    Dim fullPath As String
+
+    f = Dir(AppendPath(folderPath, "*.*"))
+    Do While Len(f) > 0
+        If InStr(1, LCase$(f), LCase$(mustContain1), vbTextCompare) > 0 Then
+            If Len(mustContain2) = 0 Or InStr(1, LCase$(f), LCase$(mustContain2), vbTextCompare) > 0 Then
+                fullPath = AppendPath(folderPath, f)
+                FindFirstMatchingFile = fullPath
+                Exit Function
+            End If
+        End If
+        f = Dir
+    Loop
+
+    FindFirstMatchingFile = ""
+End Function
+
+Private Sub CreateTwoSheetWorkbook(ByVal savePath As String)
+    Dim wb As Workbook
+
+    Set wb = Workbooks.Add(xlWBATWorksheet)
+    Do While wb.Worksheets.Count < 2
+        wb.Worksheets.Add After:=wb.Worksheets(wb.Worksheets.Count)
+    Loop
+
+    wb.Worksheets(1).Name = "Sheet1"
+    wb.Worksheets(2).Name = "Sheet2"
+
+    Application.DisplayAlerts = False
+    wb.SaveAs Filename:=savePath, FileFormat:=xlOpenXMLWorkbook
+    wb.Close SaveChanges:=True
+    Application.DisplayAlerts = True
+End Sub
+
+Private Sub EnsureFolder(ByVal folderPath As String)
+    If Len(Dir(folderPath, vbDirectory)) = 0 Then
+        MkDir folderPath
+    End If
+End Sub
+
+Private Function AppendPath(ByVal folderPath As String, ByVal itemName As String) As String
+    If Right$(folderPath, 1) = "\" Then
+        AppendPath = folderPath & itemName
+    Else
+        AppendPath = folderPath & "\" & itemName
+    End If
+End Function
+
+Private Function GetFileNameFromPath(ByVal fullPath As String) As String
+    GetFileNameFromPath = Mid$(fullPath, InStrRev(fullPath, "\") + 1)
+End Function
+
+Private Function PickFolder(ByVal promptText As String) As String
+    Dim fd As FileDialog
+
+    Set fd = Application.FileDialog(msoFileDialogFolderPicker)
+    With fd
+        .Title = promptText
+        .AllowMultiSelect = False
+        If .Show <> -1 Then
+            PickFolder = ""
+        Else
+            PickFolder = .SelectedItems(1)
+        End If
+    End With
+End Function
+
+Private Function CleanNamePart(ByVal v As Variant) As String
+    CleanNamePart = Trim(Replace(CStr(v), Chr(160), " "))
+End Function
