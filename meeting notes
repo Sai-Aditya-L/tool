@@ -1,0 +1,177 @@
+Meeting Minutes
+
+Date: Friday
+Topic: ISMS / ISO 27001 Risk Assessment, SOC 2 Updates, AI Governance, and Management Review Preparation
+Attendees: Drew, Linda, Vera, Sammy, and team members
+Recorder: Not specified
+
+1. Opening and General Updates
+
+* Team welcomed attendees and began with informal introductions.
+* Drew shared updates from a recent conference, including insights relevant to SOC 2 and ISO 27001.
+
+2. SOC 2 / AICPA Trust Services Criteria Update
+
+* Drew noted that the AICPA Trust Services Criteria for SOC 2 may be updated.
+* The criteria are currently undergoing an early review phase with audit firms contributing draft language.
+* Main expected change:
+    * Reduction of redundancy in criteria
+    * Consolidation or restructuring of criteria where clients are using the same controls across multiple criteria
+* Estimated timeline:
+    * Broader discussion likely next year
+    * Formal publication may not happen until around 2028
+
+3. ISO 27001 Conference Insights
+
+Drew shared two main takeaways:
+
+* Better understanding of what constitutes a minor vs. major nonconformity
+* Recommendations for improving this year’s risk assessment
+
+4. Risk Assessment and Risk Register Discussion
+
+* The team discussed the need to treat the risk register as a living document.
+* It should be:
+    * Reviewed periodically at a defined interval
+    * Updated when major system changes occur
+* Management review should include:
+    * Updates to the risk assessment
+    * Review of the current risk register
+    * Visibility for top management into current risk posture and mitigation efforts
+
+Key observations:
+
+* The ISMS risk register was created rapidly last year in about one week before the audit.
+* The prior version needs more attention and maturity this year.
+* Risk assessment coverage must align with the full ISMS scope.
+
+5. Emerging Risks to Add or Consider
+
+Drew recommended considering the following in the risk register:
+
+a. Physical / Geopolitical Risks
+
+* Global conflict and warfare
+* Nation-state cyber attacks
+* Physical attacks on data centers and company facilities
+* The need is not necessarily to directly control these events, but to:
+    * Show awareness
+    * Assess possible impact to the organization
+    * Reflect mitigation through redundancy and disaster recovery planning
+
+b. Climate Change / Global Warming
+
+* Considered a relevant risk factor for ongoing risk assessment updates
+
+c. AI-Related Risks
+
+* No specific ISO 27001 control exists solely for AI, but ISO is not limited to Annex controls.
+* The team should consider risks from:
+    * Unsupervised AI use
+    * AI integrated into products or solutions
+    * Future questions from auditors about AI’s impact on the ISMS
+* AI risk may currently be low, but should still be documented and considered
+
+6. AI Governance Discussion
+
+* Linda shared that CoreDX has a Data Usage and Ethics Governance Council (DUEGC).
+* Any AI use case must go through this council for review.
+* The council includes senior stakeholders such as:
+    * Privacy
+    * Cybersecurity
+    * Legal
+* Use cases are submitted through a formal intake process and may require pilot/test approval.
+* Vera clarified that divisional approval through councils like DUEGC is required before escalation to the broader Abbott-wide COE.
+* Team agreed this council is a strong example of an existing AI governance mechanism that can be cited in risk and governance discussions.
+
+7. Major vs. Minor Nonconformity Risks
+
+Drew explained examples of what could become a major nonconformity:
+
+* Not having a risk assessment at all
+* Having a risk assessment that does not adequately cover the defined ISMS scope
+* Having controls in the SOA without corresponding risks identified in the risk register
+
+8. SOA and Risk Register Alignment
+
+* The team discussed the gap between:
+    * Controls listed in the Statement of Applicability (SOA)
+    * Risks documented in the risk register
+* Drew explained that ISO ideally expects organizations to:
+    1. Identify risks first
+    2. Then map controls to those risks
+* In practice, the team already has a large set of controls in the SOA because Abbott cybersecurity standards require them.
+* Therefore, the current exercise is to:
+    * Compare SOA controls against risk-linked controls
+    * Identify missing mappings
+    * Add new risks where needed to justify those controls
+
+Example gaps mentioned:
+
+* Physical security risks were not previously captured
+* Additional risks may need to be added for:
+    * Climate change
+    * AI
+    * Not conforming to Abbott cybersecurity standards / lack of cyber standards
+
+9. Physical Security Gap
+
+* Physical security was previously noted informally by the auditor and not raised as a formal observation.
+* Drew emphasized that if still unaddressed, it could become:
+    * A formal observation
+    * A minor nonconformity
+    * Potentially even a major nonconformity
+* Reason:
+    * If a physical site is in scope, it is expected that physical threats, vulnerabilities, and related risks are considered in the risk register
+
+10. Working Approach for This Year
+
+The agreed approach is to:
+
+* Review the current risks already documented
+* Compare Annex controls mapped in the risk register against the full SOA
+* Identify missing controls not yet tied to risks
+* Work backward to determine which risks justify those controls
+* Add new risks where necessary to establish complete end-to-end linkage
+
+11. Objectives and Management Review
+
+* The team briefly discussed the email Drew sent regarding objectives.
+* Important elements for management review include:
+    * ISMS objectives
+    * Metrics used to measure progress against objectives
+    * ISMS performance monitoring metrics
+    * Risk assessment updates and changes
+
+12. Decisions / Agreements
+
+* The team will begin the risk assessment update exercise
+* Linda will pull the current material into Excel for review
+* Drew will send the Rapid example/work product for reference
+* Risk assessment updates and objectives/metrics will be discussed further next week
+* These topics will be incorporated into management review preparation
+
+13. Action Items
+
+Drew
+
+* Send Rapid risk assessment example/work completed with Eric
+* Share drafted language for additional risks such as:
+    * Climate change
+    * AI
+    * Cybersecurity standards compliance
+* Send status update capturing today’s discussion and to-dos
+* Continue discussion next week on objectives, metrics, and management review inputs
+
+Linda
+
+* Pull current risk mapping into Excel
+* Start the risk exercise using the current SOA and risk register
+* Review objectives email and prepare for follow-up discussion
+
+Team
+
+* Review existing risks and mapped Annex controls
+* Identify missing control-to-risk mappings
+* Add missing risks, especially around physical security and other emerging topics
+* Prepare updates for management review
