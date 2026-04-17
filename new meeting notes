@@ -1,0 +1,281 @@
+Formal Meeting Minutes
+
+Meeting Title: ISMS Risk Assessment and Management Review Planning
+Date: Friday
+Time: Not specified
+Location: Virtual meeting
+Attendees: Drew, Linda, Vera, Sammy, and other team members
+Prepared by: Not specified
+
+⸻
+
+1. Meeting Purpose
+
+The purpose of the meeting was to discuss recent conference insights related to SOC 2 and ISO 27001, review the current state of the ISMS risk assessment and risk register, identify gaps in risk-to-control mapping, discuss AI governance considerations, and align on next steps for management review preparation.
+
+⸻
+
+2. Conference Updates and Regulatory Developments
+
+Drew opened the discussion by sharing key takeaways from a recent conference, including updates relevant to both SOC 2 and ISO 27001.
+
+2.1 SOC 2 / AICPA Trust Services Criteria
+
+Drew reported that updates to the AICPA Trust Services Criteria are being considered. The current framework is several years old and is now undergoing an informal review phase described as similar to a “friends and family” review. Audit firms are contributing draft language and discussing potential revisions.
+
+The main theme of the proposed updates is the reduction of redundancy in the criteria. Specifically:
+
+* Some criteria may be consolidated where organizations commonly use the same controls to satisfy multiple trust services criteria.
+* In other cases, criteria may be split or restructured to better reflect how controls are actually implemented and assessed in practice.
+
+Drew noted that while the revisions are being discussed now, the timeline is long-term. Broader visibility may occur next year, but publication and formal implementation are unlikely before 2028.
+
+⸻
+
+3. ISO 27001 Insights from Conference
+
+Drew highlighted two particularly useful takeaways from the ISO-related sessions:
+
+* Improved clarity around the distinction between minor nonconformities and major nonconformities
+* Additional guidance on areas that should be incorporated into this year’s ISMS risk assessment
+
+These insights were framed as important for strengthening the organization’s current risk assessment process and for preparing for future audits.
+
+⸻
+
+4. Risk Assessment and Risk Register Review
+
+A significant portion of the meeting focused on the current state of the ISMS risk register and the need to improve it this year.
+
+4.1 Risk Register as a Living Document
+
+Drew emphasized that the risk register should not be treated as a one-time compliance artifact. Instead, it should be maintained as a living document that is:
+
+* Reviewed at a defined periodic interval
+* Updated when major system, business, or environmental changes occur
+* Used to reflect the organization’s evolving risk posture
+
+It was noted that the current ISMS risk register was created for the first time only in the prior year, primarily to satisfy audit expectations, and that it was assembled rapidly in approximately one week prior to the audit. While that effort was necessary and valuable, the team agreed that it now requires more structured attention and refinement.
+
+4.2 Management Review Expectations
+
+Drew stated that updates to the risk assessment should be brought into management review. This includes ensuring that top management reviews the risk register so they understand:
+
+* The current risk posture of the ISMS
+* Key risks affecting the organization
+* The actions being taken to mitigate those risks
+
+The group acknowledged that this level of management engagement with the ISMS risk register had not been fully established in the past.
+
+⸻
+
+5. Emerging and Strategic Risks to Consider
+
+Drew recommended that the organization consider a broader set of risks in the current year’s review, particularly where external developments may affect operations or resiliency.
+
+5.1 Physical and Geopolitical Risks
+
+Drew suggested that the risk register should account for major current events, including geopolitical instability and conflict. This includes:
+
+* Nation-state cyber activity
+* Physical attacks on data centers or offices
+* Regional disruptions that may affect infrastructure providers
+
+The discussion clarified that the purpose is not to suggest the organization can directly prevent such events, but rather to demonstrate that the organization:
+
+* Is aware of the risks
+* Understands how they could affect the ISMS
+* Has considered relevant mitigations such as redundancy and disaster recovery planning
+
+A team member referenced incidents involving data centers in Europe and the Middle East being taken offline, including situations where presumed redundancy proved insufficient. This was raised as an example of the type of external operational risk that may warrant acknowledgment in the risk register.
+
+5.2 Climate Change
+
+Drew also mentioned climate-related risk, including global warming, as a candidate for inclusion in the risk register. The point was not to force a high-risk designation, but to ensure the organization demonstrates awareness and due diligence where material external risk factors could affect operations or resilience.
+
+5.3 AI-Related Risks
+
+The team discussed the importance of evaluating risks associated with artificial intelligence. Drew explained that ISO 27001 does not contain a dedicated AI control requirement, but the standard is not limited strictly to Annex controls, and organizations are expected to consider risks relevant to their environment.
+
+Examples of AI-related risks mentioned included:
+
+* Unsupervised or unmanaged use of AI
+* Planned integration of AI into products or services
+* Questions from auditors regarding whether AI’s impact on the ISMS has been considered
+
+Drew stated that even if the organization determines the current AI risk to be low, it should still be explicitly considered and documented.
+
+⸻
+
+6. AI Governance Structure
+
+The conversation then turned to existing governance mechanisms relevant to AI.
+
+Linda explained that within CoreDX there is a Data Usage and Ethics Governance Council, referred to as DUEGC. This council reviews AI-related use cases before they move forward and includes senior stakeholders such as:
+
+* Privacy
+* Cybersecurity
+* Legal
+
+Linda described the process as requiring a formal use case submission, followed by review and possible approval for pilot or test use.
+
+Vera clarified that divisional approval through councils such as DUEGC is required before a use case can be escalated to the broader Abbott-wide Center of Excellence process.
+
+The group agreed that this governance council provides a strong example of an existing mechanism that can be cited as part of the organization’s current AI governance approach.
+
+⸻
+
+7. Nonconformity Risk and Audit Readiness
+
+Drew explained how weaknesses in the risk assessment could be interpreted during an ISO 27001 audit.
+
+7.1 Potential Major Nonconformities
+
+Examples of circumstances that could result in a major nonconformity included:
+
+* Failure to have an ISMS risk assessment at all
+* A risk assessment that does not adequately cover the defined ISMS scope
+* Significant disconnect between the organization’s stated controls and its documented risk basis
+
+Drew noted that these concerns are especially important because the organization now has a more developed Statement of Applicability and therefore must be able to justify why those controls are included.
+
+⸻
+
+8. Statement of Applicability and Risk Mapping
+
+A major focus of the meeting was the relationship between the Statement of Applicability and the risk register.
+
+8.1 Current Challenge
+
+The current state reflects a practical reality:
+
+* The organization already has a large number of controls in the SOA
+* Many of those controls are required because of Abbott cybersecurity standards and policies
+* However, not all of those controls currently map back to identified risks in the risk register
+
+Drew explained that, in principle, ISO expects organizations to:
+
+1. Identify risks first
+2. Select controls in response to those risks
+3. Document the selected controls in the SOA
+
+In this case, because the SOA already exists and many controls are mandatory from a corporate standards perspective, the organization must now work backward to ensure the risk register properly justifies those controls.
+
+8.2 Required Exercise
+
+The group discussed the need to:
+
+* Compare the full list of controls in the SOA against the controls currently linked to documented risks
+* Identify the delta, meaning controls that exist in the SOA but are not tied to any current risk
+* Determine which risks those unmapped controls are intended to mitigate
+* Add new risks where appropriate so that all included controls have a defensible risk basis
+
+Drew described this as a “patchwork” exercise necessary to close gaps in the risk assessment.
+
+8.3 Example Provided
+
+Drew described work done with another group, Rapid, where:
+
+* Existing controls linked to risks were compared with the total control set
+* Additional controls were added to existing risks where they logically helped mitigate those risks
+* New risks were created where no current risk existed to justify an SOA control
+
+Examples of newly added or strengthened risk areas included:
+
+* Physical security
+* Climate-related risk
+* AI risk
+* Risk of not having, or not conforming to, organizational cybersecurity standards
+
+⸻
+
+9. Physical Security Gap
+
+The team specifically discussed physical security as a previously identified gap.
+
+Drew recalled that the lack of physical-security-related risks in the register had been mentioned by the auditor as an informal observation in the prior year. While it was not formally recorded, Drew warned that failure to address it now could lead to a formal finding in a future audit.
+
+The reasoning was explained as follows:
+
+* If a physical site is included in scope, such as Irving, Texas
+* And if physical controls at that site are part of the ISMS
+* Then the risk assessment must logically include physical threats, vulnerabilities, and corresponding risks
+
+Without those linkages, an auditor could conclude that the risk assessment does not adequately address the full scope of the ISMS.
+
+⸻
+
+10. Team Discussion on Implementation Approach
+
+Linda asked where to begin, noting that the previous approach had started from the SOA and mapped controls to it. Drew clarified that the task now is to map controls to risks in a way that can support the SOA.
+
+Linda also raised a question about whether the SOA should be reduced this year, based on prior discussion about not including unnecessary controls. Drew responded that he did not agree with the idea of trimming controls simply because they are not currently mapped. He explained that this does not necessarily mean the controls are unnecessary. Rather, it may indicate that the underlying risks have not yet been fully identified.
+
+Drew stressed that many of the unmapped controls may correspond to important risks, such as encryption, network security, availability, and defense-in-depth. Therefore, the correct solution is not to remove the controls, but to improve the rationale and risk mapping that supports them.
+
+An example was discussed in which management responsibilities, under Annex Control 5.4, could also help mitigate the risk associated with lack of executive sponsorship, even if that linkage had not originally been documented.
+
+⸻
+
+11. Management Review and Objectives
+
+Toward the end of the meeting, Drew referenced a previously sent email regarding ISMS objectives.
+
+He noted that management review should include:
+
+* ISMS objectives
+* Metrics used to assess achievement of those objectives
+* Metrics related to ISMS performance monitoring
+* Updates to the risk assessment and associated improvement work
+
+Drew emphasized that these are not separate workstreams, but closely connected components of effective ISMS governance and management review preparation.
+
+⸻
+
+12. Decisions and Agreements
+
+The following conclusions and agreements were reached during the meeting:
+
+1. The current ISMS risk register requires additional refinement this year.
+2. The risk register must be maintained as a living document and included in management review.
+3. The team will conduct a structured exercise to compare SOA controls against risk-linked controls.
+4. Missing control-to-risk mappings will be identified and resolved.
+5. New risks will be added where necessary, with particular attention to:
+    * Physical security
+    * AI
+    * Climate and external disruption
+    * Cybersecurity standards compliance
+6. Existing AI governance structures, such as the DUEGC, should be documented and referenced where appropriate.
+7. The objectives and metrics work should be incorporated into management review preparation alongside the risk assessment updates.
+
+⸻
+
+13. Action Items
+
+Drew
+
+* Share the Rapid example and related materials used in the recent risk mapping exercise.
+* Provide draft language for additional risk entries, including:
+    * Climate-related risk
+    * AI risk
+    * Risk related to nonconformance with cybersecurity standards
+* Send the team a status update summarizing discussion points, completed items, and next steps.
+* Continue discussion next week regarding objectives, metrics, and management review inputs.
+
+Linda
+
+* Pull the current risk mapping and related information into Excel.
+* Begin the control-to-risk mapping review exercise.
+* Review Drew’s objectives email in preparation for follow-up discussion.
+
+Team
+
+* Review the current risk register and Annex control mappings.
+* Identify missing risks and missing justifications for existing controls.
+* Prepare to discuss updates in the next meeting.
+
+⸻
+
+14. Next Steps
+
+The team agreed to continue the risk assessment review in the following week. The immediate priority is to begin the mapping exercise, identify missing risks, and improve the completeness and defensibility of the current risk register before management review and future audit activity.
