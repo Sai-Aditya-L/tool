@@ -1,0 +1,187 @@
+Meeting Minutes
+
+Prepared from transcript provided by user
+
+Meeting purpose: Status review of ISO/ISMS and SOC 2 readiness work, with emphasis on risk register updates, Statement of Applicability alignment, narrative/evidence review, and ownership of control activities.
+
+Date
+
+Not stated in transcript
+
+Attendees
+
+Drew, Sammy, Si/Sai, Linda referenced, Aaron referenced, others referenced but not present
+
+Primary Topics
+
+ISMS status cadence, risk register revisions, SOA mapping, SOC 2 narratives/evidence, control ownership, mock audit planning
+
+Overall Status
+
+Work in progress; several items need validation, ownership confirmation, and evidence refinement
+
+Key Concern
+
+Potential gaps or ownership ambiguity in SOC 2 controls tied to prior DTS/Syed support model
+
+ 
+
+Key Points Discussed
+• The current recurring status meeting time is no longer working well for some participants. A move to Monday or another time early in the week was discussed to improve attendance.
+• The team revisited last week’s discussion on the risk register and reviewed additions, removals, and areas that still need refinement.
+• AI-related risks were discussed in two dimensions: internal organizational use of AI and external threats enabled by AI. The internal risk draft already covers unauthorized disclosure of sensitive information and use of third-party AI systems.
+• The speaker noted that AI use is tightly governed within Abbott and that Core Diagnostics has a senior leader and council structure overseeing AI-related requests and exceptions.
+• Upcoming GenAI and agentic AI policy documents were referenced as future inputs that should be incorporated into the risk and control documentation once available.
+• Additional risk areas identified for better coverage included physical security, insider threat, cloud-related risks, and third-party supply chain or partner security risks.
+• A key objective is to ensure the risk register ties cleanly into the Statement of Applicability (SOA), so every listed control has a corresponding risk rationale and related justification.
+• The group discussed the idea that every control should be traceable back to a risk, and that unmatched SOA controls may indicate incompletely identified risks.
+• The team is also preparing to move from risk work into objectives and metrics once the current risk-register and SOA alignment activities are complete.
+• A broader yearly tracking document exists for certification maintenance tasks, nonconformities, audits, control monitoring, evidence refreshes, and related obligations. This will be shared for review.
+• The SOC 2 review is currently focused on reviewing narratives and evidence. Comments were entered in the review column, with a second layer of review underway.
+• A major concern is that several SOC 2 controls still name Syed/Sai or the prior support model as control owner, even though support responsibilities may now sit elsewhere. This raises the possibility of outdated narratives or potential control gaps.
+• The highest-risk area appears to be the IT operations section, especially customer support, operational incident management, incident review meetings, metrics, and cloud inventory management.
+• The team discussed the difference between ISO and SOC 2 treatment of control gaps. ISO is more tolerant when an issue is known and being fixed, while SOC 2 expects the described control environment to be in place across the audit period.
+• Evidence quality expectations were clarified. Screenshots should ideally include a visible date/time or other context showing reproducibility, timing, and the system/source they came from.
+• Existing evidence may not need to be recollected immediately if the team can reproduce the same evidence on demand during walkthroughs or audit requests.
+• A mock SOC 2 audit by Coalfire is planned for late June. It will simulate external audit interviews, evidence requests, and control testing to help the team prepare for the actual audit.
+Decisions Taken
+• The recurring status meeting should likely be rescheduled to a different time, with Monday being a preferred option to improve attendance.
+• The risk register will be expanded to include clearer coverage for AI, insider threat, cloud, physical security, and third-party/supply-chain related risks.
+• Risk-register entries must be explicitly mapped back to the SOA so that risks, controls, and justifications form a consistent three-way linkage.
+• SOC 2 narrative and evidence review will continue using the current review-comments approach, with remaining controls to be reviewed in sequence.
+• The team will specifically investigate whether current operational controls described in SOC 2 narratives still exist as written and whether the listed owners are accurate.
+• Evidence management will move toward storing attachments in the designated folder structure, with links or centralized storage allowed where appropriate.
+• The mock audit with Coalfire will be used as a readiness check ahead of the formal SOC 2 audit.
+Action Items
+Action Item
+
+Owner
+
+Due / Timing
+
+Notes
+
+Review alternate meeting times and likely move the recurring status meeting, with Monday slots to be checked.
+
+Drew
+
+Before next status meeting
+
+Reschedule to improve attendance for key participants.
+
+Continue updating the risk register, including AI, cloud, insider threat, physical security, and third-party/supply-chain risks.
+
+Si/Sai with Linda support
+
+Initial updates targeted by end of day / early next week
+
+Linda to help with categories and mitigation strategies.
+
+Review and incorporate upcoming GenAI and agentic AI policy documents into risk/control materials once available.
+
+Si/Sai
+
+When documents become available
+
+May require enforcement/control linkage through existing governance tools.
+
+Map risk-register entries to the SOA and strengthen justifications where controls exist without clearly documented risks.
+
+Si/Sai
+
+Next working cycle
+
+Goal is a complete three-way mapping among risks, controls, and SOA justification.
+
+After Linda’s review, send the updated risk work back for additional peer review.
+
+Si/Sai and Linda
+
+After Linda review
+
+Drew offered follow-up review.
+
+Share the broader yearly certification/compliance tracking plan with named owners for review.
+
+Drew
+
+After meeting
+
+Includes audits, nonconformities, evidence refresh, and maintenance activities.
+
+Review SOC 2 narratives and evidence for the remaining controls and complete comments.
+
+Drew and Si/Sai
+
+Same day / current review session
+
+Two layers of review are in progress.
+
+Investigate all SOC 2 controls currently assigned to Syed/Sai or the prior support model and confirm who now performs those control activities.
+
+Sammy
+
+As soon as possible
+
+Primary escalation/contact is Aaron; especially important for IT operations controls.
+
+Confirm whether customer support, incident meetings, operational metrics, and related IT operations processes are being performed today, by whom, and at what cadence.
+
+Sammy with Aaron
+
+As soon as possible
+
+Critical for SOC 2 because unsupported controls could create report deficiencies.
+
+Review backup-related narrative sections and validate whether the described practices and ownership remain accurate.
+
+Sammy
+
+During narrative cleanup
+
+Flagged as another area needing attention.
+
+Improve evidence quality by capturing date/time context and preserving enough screen context to show source and reproducibility.
+
+Sammy / control owners
+
+Before mock audit and formal evidence refresh
+
+Do not necessarily recollect everything now if it can be regenerated on demand.
+
+Create or use the designated evidence folder location and store/upload attachments there for SOC 2 support.
+
+Sammy
+
+Near term
+
+Can use folder links if easier to manage.
+
+Reach out for help whenever a control narrative, owner, or evidence expectation is unclear.
+
+Sammy
+
+Ongoing
+
+Drew and Si/Sai explicitly offered support.
+
+Prepare for Coalfire mock audit using the EY-style request list, controls, narratives, and evidence set.
+
+Broader team led by Drew
+
+Targeting late June
+
+Used to simulate interviews, request handling, and evidence testing.
+
+ 
+
+Risks / Open Issues
+• Some SOC 2 control narratives may still reference outdated support structures and owners.
+• If certain IT operations controls are no longer functioning as described, the organization could face SOC 2 deficiencies for the period already elapsed.
+• Some controls may be in scope only partially or may not be applicable as currently written, especially where customer access or PII assumptions appear inaccurate.
+• Evidence currently attached may be directionally correct but not audit-ready because timestamps, source context, or configuration detail are missing.
+Next Steps
+• Finalize the current round of risk-register updates and SOA alignment work.
+• Complete the remaining SOC 2 narrative review and confirm current control ownership.
+• Organize evidence in the agreed repository/folder structure.
+• Use the next status meeting to confirm progress on control-owner validation, risk mapping, and readiness for mock audit.
